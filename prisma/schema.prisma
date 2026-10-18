@@ -1,0 +1,1993 @@
+// Technic Technologies — Electronics ERP database schema
+// Architecture: Firm → Branch → User → Business data, with GST / NON-GST
+// access modes enforced on every operational record.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+/// PLATFORM_ADMIN is the cross-firm system operator ("Super Admin") — belongs
+/// to no single firm and manages firms, users and access codes across them.
+/// The remaining roles are the firm-level roles from the handover spec.
+enum UserRole {
+  PLATFORM_ADMIN
+  ADMIN
+  MANAGER
+  ACCOUNTANT
+  SALES_STAFF
+  PURCHASE_STAFF
+  INVENTORY_MANAGER
+  VIEWER
+}
+
+enum FirmStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum BranchType {
+  HEAD_OFFICE
+  BRANCH
+  WAREHOUSE
+}
+
+enum AccessCodeType {
+  GST
+  NON_GST
+}
+
+enum TaxMode {
+  GST
+  NON_GST
+}
+
+/// The reporting view a user operates in. COMBINED sees every transaction;
+/// GST_ONLY is the internal GST-reconciliation view and filters non-GST rows
+/// out of every backend query. It never changes what is stored or audited.
+enum AccessView {
+  COMBINED
+  GST_ONLY
+}
+
+enum CustomerType {
+  RETAIL
+  BUSINESS
+  DEALER
+  CORPORATE
+  OTHER
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SerialStatus {
+  IN_STOCK
+  SOLD
+  RETURNED
+  DAMAGED
+  WARRANTY
+}
+
+enum SerialEventType {
+  PURCHASE_IN
+  STOCK_IN
+  SOLD
+  SALE_RETURNED
+  PURCHASE_RETURNED
+  TRANSFERRED_OUT
+  TRANSFERRED_IN
+  ADJUSTED
+  DAMAGED
+  WARRANTY_CLAIMED
+  WARRANTY_REPLACED
+}
+
+enum StockTxnType {
+  OPENING
+  PURCHASE_IN
+  SALE_OUT
+  SALE_RETURN_IN
+  PURCHASE_RETURN_OUT
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUST_IN
+  ADJUST_OUT
+  DAMAGE_OUT
+}
+
+enum StockAdjustmentType {
+  INCREASE
+  DECREASE
+  DAMAGE
+  LOST
+  CORRECTION
+}
+
+enum StockTransferStatus {
+  DRAFT
+  REQUESTED
+  APPROVED
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CONVERTED
+}
+
+enum SalesOrderStatus {
+  DRAFT
+  CONFIRMED
+  INVOICED
+  CANCELLED
+}
+
+enum InvoiceKind {
+  TAX_INVOICE
+  NON_GST_BILL
+}
+
+enum InvoiceStatus {
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+enum SalesReturnStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+enum PurchaseInvoiceStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+enum PaymentDirection {
+  CUSTOMER_IN
+  SUPPLIER_OUT
+  REFUND_OUT
+}
+
+enum PaymentStatus {
+  PAID
+  PARTIAL
+  PENDING
+  OVERDUE
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  CARD
+  BANK_TRANSFER
+  CHEQUE
+  OTHER
+}
+
+enum WarrantyStatus {
+  ACTIVE
+  EXPIRED
+  CLAIMED
+  REPLACED
+}
+
+enum WarrantyType {
+  STANDARD
+  EXTENDED
+  MANUFACTURER
+  SELLER
+}
+
+enum ExpenseCategory {
+  RENT
+  ELECTRICITY
+  INTERNET
+  SALARY
+  TRANSPORT
+  OFFICE
+  MARKETING
+  MAINTENANCE
+  OTHER
+}
+
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum AuditAction {
+  LOGIN
+  LOGIN_FAILED
+  LOGOUT
+  ACCESS_CODE_USED
+  ACCESS_CODE_FAILED
+  ACCESS_CODE_CREATED
+  ACCESS_CODE_UPDATED
+  PRODUCT_CREATED
+  PRODUCT_UPDATED
+  PRODUCT_DELETED
+  STOCK_ADJUSTED
+  STOCK_TRANSFERRED
+  PURCHASE_CREATED
+  PURCHASE_RECEIVED
+  PURCHASE_RETURNED
+  SALE_CREATED
+  SALE_RETURNED
+  INVOICE_CREATED
+  INVOICE_CANCELLED
+  INVOICE_DELETED
+  PAYMENT_CREATED
+  QUOTATION_CREATED
+  QUOTATION_CONVERTED
+  QUOTATION_DELETED
+  CUSTOMER_CREATED
+  SUPPLIER_CREATED
+  USER_CREATED
+  USER_UPDATED
+  USER_PERMISSION_CHANGED
+  FIRM_UPDATED
+  WARRANTY_CLAIMED
+  EXPENSE_CREATED
+  SETTING_UPDATED
+  INVOICE_IMPORT_UPLOADED
+  INVOICE_IMPORT_PROCESSED
+  INVOICE_IMPORT_EDITED
+  INVOICE_IMPORT_APPROVED
+  INVOICE_IMPORT_REJECTED
+  INVOICE_IMPORT_POSTED
+}
+
+enum WhatsAppMessageType {
+  INVOICE
+  QUOTATION
+  PAYMENT_REMINDER
+  CUSTOM
+}
+
+// ============================================================================
+// ORGANISATION, IDENTITY & ACCESS CONTROL
+// ============================================================================
+
+/// A tenant. Every business-data row in the system belongs to exactly one Firm.
+model Firm {
+  id              String     @id @default(cuid())
+  code            String     @unique
+  /// Legal entity name, e.g. "Technic Technologies Pvt Ltd".
+  name            String
+  legalName       String?
+  /// The trading name shown on screens and documents.
+  displayName     String?
+  gstin           String?
+  pan             String?
+  addressLine     String?
+  city            String?
+  state           String?
+  /// State name used to decide CGST+SGST vs IGST at invoice time.
+  stateCode       String?
+  pincode         String?
+  country         String     @default("India")
+  phone           String?
+  email           String?
+  website         String?
+  logoUrl         String?
+  invoicePrefix   String     @default("INV")
+  quotationPrefix String     @default("QT")
+  purchasePrefix  String     @default("PO")
+  currency        String     @default("INR")
+  /// e.g. "26-27" — drives document numbering reset rules.
+  financialYear   String     @default("26-27")
+  status          FirmStatus @default(ACTIVE)
+  /// Soft-delete marker: set when the firm is moved to the trash. The firm is
+  /// hidden from every query and purged for good 100 days later.
+  deletedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branches          Branch[]
+  users             User[]
+  accessCodes       AccessCode[]
+  auditLogs         AuditLog[]
+  settings          Setting[]
+  documentSequences DocumentSequence[]
+  categories        Category[]
+  brands            Brand[]
+  products          Product[]
+  serialUnits       SerialUnit[]
+  stockTransactions StockTransaction[]
+  stockAdjustments  StockAdjustment[]
+  stockTransfers    StockTransfer[]
+  customers         Customer[]
+  suppliers         Supplier[]
+  quotations        Quotation[]
+  salesOrders       SalesOrder[]
+  invoices          Invoice[]
+  salesReturns      SalesReturn[]
+  payments          Payment[]
+  purchaseOrders    PurchaseOrder[]
+  goodsReceipts     GoodsReceipt[]
+  purchaseInvoices  PurchaseInvoice[]
+  supplierPayments  SupplierPayment[]
+  purchaseReturns   PurchaseReturn[]
+  expenses          Expense[]
+  warranties        Warranty[]
+  whatsappLogs      WhatsAppLog[]
+  whatsappTemplates WhatsAppTemplate[]
+  journalEntries    JournalEntry[]
+  invoiceImportBatches   InvoiceImportBatch[]
+  invoiceImportDocuments InvoiceImportDocument[]
+  invoiceImportAliases   InvoiceImportProductAlias[]
+
+  @@index([status])
+  @@map("firms")
+}
+
+model Branch {
+  firmId String
+  firm   Firm       @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id     String     @id @default(cuid())
+  code   String
+  name   String
+  type   BranchType @default(BRANCH)
+
+  addressLine String?
+  city        String?
+  state       String?
+  stateCode   String?
+  pincode     String?
+  phone       String?
+  email       String?
+  gstin       String?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users             User[]
+  products          Product[]
+  serialUnits       SerialUnit[]
+  stockTransactions StockTransaction[]
+  stockAdjustments  StockAdjustment[]
+  warranties        Warranty[]
+  customers         Customer[]
+  quotations        Quotation[]
+  salesOrders       SalesOrder[]
+  invoices          Invoice[]
+  salesReturns      SalesReturn[]
+  payments          Payment[]
+  purchaseOrders    PurchaseOrder[]
+  goodsReceipts     GoodsReceipt[]
+  purchaseInvoices  PurchaseInvoice[]
+  supplierPayments  SupplierPayment[]
+  purchaseReturns   PurchaseReturn[]
+  expenses          Expense[]
+  stockTransfersOut StockTransfer[]    @relation("StockTransferFrom")
+  stockTransfersIn  StockTransfer[]    @relation("StockTransferTo")
+  auditLogs         AuditLog[]
+
+  @@unique([firmId, code])
+  @@index([isActive])
+  @@index([firmId])
+  @@map("branches")
+}
+
+model User {
+  firmId       String?
+  firm         Firm?      @relation(fields: [firmId], references: [id], onDelete: SetNull)
+  id           String     @id @default(cuid())
+  employeeCode String?
+  name         String
+  email        String     @unique
+  phone        String?
+  /// The single credential used to sign in — a short code entered on the
+  /// login screen instead of an email/password pair.
+  accessCode   String     @unique
+  role         UserRole   @default(VIEWER)
+  status       UserStatus @default(ACTIVE)
+  branchId     String?
+  branch       Branch?    @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  /// Reporting view for this user (see AccessView). Defaults to the full view.
+  accessView   AccessView @default(COMBINED)
+
+  image       String?
+  lastLoginAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  permissions             UserPermission[]
+  accounts                Account[]
+  sessions                Session[]
+  invoicesIssued          Invoice[]          @relation("InvoiceIssuedBy")
+  quotationsCreated       Quotation[]        @relation("QuotationCreatedBy")
+  salesOrdersCreated      SalesOrder[]       @relation("SalesOrderCreatedBy")
+  paymentsReceived        Payment[]          @relation("PaymentReceivedBy")
+  adjustmentsMade         StockAdjustment[]
+  stockTxns               StockTransaction[]
+  transfersCreated        StockTransfer[]    @relation("TransferCreatedBy")
+  expensesCreated         Expense[]          @relation("ExpenseCreatedBy")
+  auditLogs               AuditLog[]
+  accessCodesCreated      AccessCode[]       @relation("AccessCodeCreatedBy")
+  salesReturnsCreated     SalesReturn[]      @relation("ReturnCreatedBy")
+  salesReturnsApproved    SalesReturn[]      @relation("ReturnApprovedBy")
+  purchaseOrdersCreated   PurchaseOrder[]    @relation("PurchaseOrderCreatedBy")
+  goodsReceiptsReceived   GoodsReceipt[]     @relation("GoodsReceivedBy")
+  purchaseInvoicesCreated PurchaseInvoice[]  @relation("PurchaseInvoiceCreatedBy")
+  supplierPaymentsPaid    SupplierPayment[]  @relation("SupplierPaymentPaidBy")
+  purchaseReturnsCreated  PurchaseReturn[]   @relation("PurchaseReturnCreatedBy")
+  whatsappLogsSent        WhatsAppLog[]      @relation("WhatsAppSentBy")
+  expensesApproved        Expense[]          @relation("ExpenseApprovedBy")
+
+  @@index([branchId])
+  @@index([role])
+  @@index([status])
+  @@index([firmId])
+  @@map("users")
+}
+
+/// A GST or NON-GST entry code for a firm. Codes are stored as bcrypt hashes —
+/// never plain text — and validated with constant-work comparisons.
+model AccessCode {
+  id          String         @id @default(cuid())
+  firmId      String
+  firm        Firm           @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  codeHash    String
+  type        AccessCodeType
+  description String?
+  isActive    Boolean        @default(true)
+  expiresAt   DateTime?
+  lastUsedAt  DateTime?
+  useCount    Int            @default(0)
+  createdById String?
+  createdBy   User?          @relation("AccessCodeCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([firmId, type])
+  @@index([firmId, isActive])
+  @@map("access_codes")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  module      String
+  description String
+  createdAt   DateTime @default(now())
+
+  roles RolePermission[]
+  users UserPermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  role         UserRole
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([role, permissionId])
+  @@index([role])
+  @@map("role_permissions")
+}
+
+model UserPermission {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  granted      Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+
+  @@unique([userId, permissionId])
+  @@index([userId])
+  @@map("user_permissions")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expires      DateTime
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model AuditLog {
+  firmId    String?
+  firm      Firm?       @relation(fields: [firmId], references: [id], onDelete: SetNull)
+  id        String      @id @default(cuid())
+  userId    String?
+  user      User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  branchId  String?
+  branch    Branch?     @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  action    AuditAction
+  entity    String
+  entityId  String?
+  summary   String?
+  before    Json?
+  after     Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime    @default(now())
+
+  @@index([entity, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([firmId])
+  @@map("audit_logs")
+}
+
+/// Per-firm, per-document-type, per-financial-year counters. GST and NON-GST
+/// invoices count on separate keys so the two sequences can never collide.
+model DocumentSequence {
+  id            String  @id @default(cuid())
+  firmId        String
+  firm          Firm    @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  documentType  String // invoice | quotation | sales_order | purchase_order | purchase_invoice | sales_return | purchase_return | payment | credit_note | debit_note | stock_transfer | expense | customer | supplier
+  /// Tax sequence the counter belongs to. Column remains "accessMode" so
+  /// existing sequence rows and numbering history are untouched.
+  taxMode       TaxMode @default(NON_GST) @map("accessMode")
+  financialYear String  @default("26-27")
+  prefix        String?
+  value         Int     @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([firmId, documentType, taxMode, financialYear])
+  @@index([firmId])
+  @@map("document_sequences")
+}
+
+model Setting {
+  firmId    String
+  firm      Firm     @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  key       String
+  value     String
+  category  String   @default("general")
+  updatedAt DateTime @updatedAt
+
+  @@id([firmId, key])
+  @@index([firmId])
+  @@map("settings")
+}
+
+// ============================================================================
+// CATALOGUE — CATEGORIES, BRANDS, PRODUCTS
+// ============================================================================
+
+model Category {
+  firmId      String
+  firm        Firm       @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id          String     @id @default(cuid())
+  name        String
+  parentId    String?
+  parent      Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children    Category[] @relation("CategoryHierarchy")
+  description String?
+  isActive    Boolean    @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+
+  @@unique([firmId, name])
+  @@index([firmId, isActive])
+  @@map("categories")
+}
+
+model Brand {
+  firmId   String
+  firm     Firm    @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id       String  @id @default(cuid())
+  name     String
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+
+  @@unique([firmId, name])
+  @@index([firmId])
+  @@map("brands")
+}
+
+/// Electronics product master. Electronics categories vary, so the spec forbids
+/// hardcoding spec attributes — those live in ProductAttribute rows instead.
+model Product {
+  firmId          String
+  firm            Firm          @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id              String        @id @default(cuid())
+  name            String
+  /// Secondary display line — model / variant / description shown under the
+  /// product name on quotations, invoices, purchases and PDFs.
+  subName         String?
+  brandId         String?
+  brand           Brand?        @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  categoryId      String?
+  category        Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  subcategory     String?
+  sku             String
+  barcode         String?
+  modelNumber     String?
+  partNumber      String?
+  hsnCode         String?
+  gstRate         Decimal       @default(18) @db.Decimal(5, 2)
+  unit            String        @default("pcs")
+  purchasePrice   Decimal       @default(0) @db.Decimal(12, 2)
+  sellingPrice    Decimal       @default(0) @db.Decimal(12, 2)
+  mrp             Decimal       @default(0) @db.Decimal(12, 2)
+  minSellingPrice Decimal       @default(0) @db.Decimal(12, 2)
+  /// Warranty months granted on sale; 0 = no warranty.
+  warrantyMonths  Int           @default(0)
+  warrantyType    WarrantyType  @default(STANDARD)
+  description     String?
+  imageUrl        String?
+  status          ProductStatus @default(ACTIVE)
+  /// Whether sales must specify individual serial numbers / IMEIs.
+  trackSerials    Boolean       @default(false)
+  /// Whether the product tracks IMEI1/IMEI2 in addition to a serial.
+  trackImei       Boolean       @default(false)
+  lowStockQty     Int           @default(0)
+  branchId        String?
+  branch          Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  attributes           ProductAttribute[]
+  variants             ProductVariant[]
+  serialUnits          SerialUnit[]
+  stockTxns            StockTransaction[]
+  quotationLines       QuotationLine[]
+  orderLines           SalesOrderLine[]
+  invoiceLines         InvoiceLine[]
+  purchaseLines        PurchaseOrderLine[]
+  returnLines          SalesReturnLine[]
+  warrantyRecords      Warranty[]
+  stockTransferLines   StockTransferLine[]
+  stockAdjustments     StockAdjustment[]
+  goodsReceiptLines    GoodsReceiptLine[]
+  purchaseInvoiceLines PurchaseInvoiceLine[]
+  purchaseReturnLines  PurchaseReturnLine[]
+  importAliases        InvoiceImportProductAlias[]
+
+  @@unique([firmId, sku])
+  @@index([categoryId])
+  @@index([brandId])
+  @@index([barcode])
+  @@index([status])
+  @@index([name])
+  @@index([firmId, categoryId, status])
+  @@map("products")
+}
+
+/// Flexible spec attributes — "Capacity: 1TB", "RAM: 16GB", "Voltage: 230V" —
+/// so no electronics category ever needs its own hardcoded column.
+model ProductAttribute {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name      String
+  value     String
+
+  @@unique([productId, name])
+  @@index([productId])
+  @@map("product_attributes")
+}
+
+/// A purchasable/sellable variant of a product, e.g. Samsung SSD 500GB/1TB/2TB.
+model ProductVariant {
+  id             String  @id @default(cuid())
+  productId      String
+  product        Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name           String
+  sku            String
+  barcode        String?
+  purchasePrice  Decimal @default(0) @db.Decimal(12, 2)
+  sellingPrice   Decimal @default(0) @db.Decimal(12, 2)
+  mrp            Decimal @default(0) @db.Decimal(12, 2)
+  warrantyMonths Int     @default(0)
+  isActive       Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  serialUnits          SerialUnit[]
+  stockTxns            StockTransaction[]
+  invoiceLines         InvoiceLine[]
+  quotationLines       QuotationLine[]
+  orderLines           SalesOrderLine[]
+  purchaseLines        PurchaseOrderLine[]
+  stockAdjustments     StockAdjustment[]
+  stockTransferLines   StockTransferLine[]
+  salesReturnLines     SalesReturnLine[]
+  goodsReceiptLines    GoodsReceiptLine[]
+  purchaseInvoiceLines PurchaseInvoiceLine[]
+  purchaseReturnLines  PurchaseReturnLine[]
+
+  @@unique([productId, sku])
+  @@index([barcode])
+  @@index([sku])
+  @@map("product_variants")
+}
+
+// ============================================================================
+// SERIAL / IMEI TRACKING
+// ============================================================================
+
+/// One row per individually tracked unit. Serial numbers are unique per firm.
+model SerialUnit {
+  firmId       String
+  firm         Firm            @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id           String          @id @default(cuid())
+  productId    String
+  product      Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId    String?
+  variant      ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  serialNumber String
+  imei1        String?
+  imei2        String?
+  status       SerialStatus    @default(IN_STOCK)
+  branchId     String
+  branch       Branch          @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  purchaseInvoiceId String?
+  purchaseInvoice   PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id], onDelete: SetNull)
+  soldInvoiceId     String?
+  soldInvoice       Invoice?         @relation("SerialSoldInvoice", fields: [soldInvoiceId], references: [id], onDelete: SetNull)
+  soldInvoiceLineId String?
+  soldInvoiceLine   InvoiceLine?     @relation("SerialSoldLine", fields: [soldInvoiceLineId], references: [id], onDelete: SetNull)
+  warrantyRecords   Warranty[]
+
+  purchasePrice Decimal @default(0) @db.Decimal(12, 2)
+  sellingPrice  Decimal @default(0) @db.Decimal(12, 2)
+
+  purchasedAt DateTime?
+  soldAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  history SerialHistory[]
+
+  @@unique([firmId, serialNumber])
+  @@index([productId, status])
+  @@index([branchId, status])
+  @@index([imei1])
+  @@index([imei2])
+  @@index([firmId, status])
+  @@map("serial_units")
+}
+
+/// Append-only lifecycle ledger: Purchase → Stock → Sale → Customer → Warranty.
+model SerialHistory {
+  id           String          @id @default(cuid())
+  serialUnitId String
+  serialUnit   SerialUnit      @relation(fields: [serialUnitId], references: [id], onDelete: Cascade)
+  eventType    SerialEventType
+  fromStatus   SerialStatus?
+  toStatus     SerialStatus
+  reference    String? // document number involved (invoice / PO / return)
+  documentId   String?
+  note         String?
+  userId       String?
+  createdAt    DateTime        @default(now())
+
+  @@index([serialUnitId, createdAt])
+  @@index([eventType])
+  @@map("serial_history")
+}
+
+// ============================================================================
+// INVENTORY — TRANSACTION-DRIVEN STOCK
+// ============================================================================
+
+/// The only way stock changes. Every purchase, sale, return, adjustment and
+/// transfer writes rows here; no code path mutates stock silently.
+model StockTransaction {
+  firmId       String
+  firm         Firm            @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id           String          @id @default(cuid())
+  productId    String
+  product      Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId    String?
+  variant      ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  branchId     String
+  branch       Branch          @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  type         StockTxnType
+  /// Signed delta: positive adds to stock, negative removes.
+  quantity     Int
+  balanceAfter Int
+  unitCost     Decimal?        @db.Decimal(12, 2)
+  reference    String? // document number
+  documentType String?
+  documentId   String?
+  notes        String?
+  userId       String?
+  user         User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt    DateTime        @default(now())
+
+  @@index([productId, createdAt])
+  @@index([branchId, createdAt])
+  @@index([type])
+  @@index([firmId, createdAt])
+  @@map("stock_transactions")
+}
+
+/// Audit row for manual adjustments — Increase / Decrease / Damage / Lost /
+/// Correction, each with reason, user, date and reference.
+model StockAdjustment {
+  firmId           String
+  firm             Firm                @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id               String              @id @default(cuid())
+  adjustmentNumber String              @unique
+  branchId         String
+  branch           Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  type             StockAdjustmentType
+  reason           String
+  reference        String?
+  productId        String
+  product          Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId        String?
+  variant          ProductVariant?     @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  quantity         Int
+  unitCost         Decimal?            @db.Decimal(12, 2)
+  createdById      String?
+  createdBy        User?               @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt        DateTime            @default(now())
+
+  @@index([branchId, createdAt])
+  @@index([productId])
+  @@index([firmId, createdAt])
+  @@map("stock_adjustments")
+}
+
+model StockTransfer {
+  firmId         String
+  firm           Firm                @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id             String              @id @default(cuid())
+  transferNumber String              @unique
+  fromBranchId   String
+  fromBranch     Branch              @relation("StockTransferFrom", fields: [fromBranchId], references: [id], onDelete: Restrict)
+  toBranchId     String
+  toBranch       Branch              @relation("StockTransferTo", fields: [toBranchId], references: [id], onDelete: Restrict)
+  status         StockTransferStatus @default(DRAFT)
+  notes          String?
+  dispatchNote   String?
+  receivedNote   String?
+  createdById    String?
+  createdBy      User?               @relation("TransferCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  dispatchedAt   DateTime?
+  receivedAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  lines StockTransferLine[]
+
+  @@index([fromBranchId, status])
+  @@index([toBranchId, status])
+  @@index([firmId, status])
+  @@map("stock_transfers")
+}
+
+model StockTransferLine {
+  id            String          @id @default(cuid())
+  transferId    String
+  transfer      StockTransfer   @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId     String?
+  variant       ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  quantity      Int
+  serialNumbers String? // newline-separated serials for tracked products
+
+  @@index([transferId])
+  @@index([productId])
+  @@map("stock_transfer_lines")
+}
+
+// ============================================================================
+// PARTNERS — CUSTOMERS & SUPPLIERS
+// ============================================================================
+
+model Customer {
+  firmId   String
+  firm     Firm   @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id       String @id @default(cuid())
+  code     String
+  branchId String
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  name           String
+  company        String?
+  phone          String
+  email          String?
+  addressLine    String?
+  city           String?
+  state          String?
+  stateCode      String?
+  pincode        String?
+  gstin          String?
+  pan            String?
+  type           CustomerType @default(RETAIL)
+  creditLimit    Decimal      @default(0) @db.Decimal(12, 2)
+  /// Balance carried forward from before this system.
+  openingBalance Decimal      @default(0) @db.Decimal(12, 2)
+  notes          String?
+  isActive       Boolean      @default(true)
+
+  // Rolled up from invoices and payments whenever either changes.
+  invoiceCount      Int       @default(0)
+  totalBilled       Decimal   @default(0) @db.Decimal(14, 2)
+  outstandingAmount Decimal   @default(0) @db.Decimal(14, 2)
+  lastInvoiceAt     DateTime?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  quotations     Quotation[]
+  salesOrders    SalesOrder[]
+  invoices       Invoice[]
+  salesReturns   SalesReturn[]
+  payments       Payment[]
+  warranties     Warranty[]
+  whatsappLogs   WhatsAppLog[]
+  journalEntries JournalEntry[]
+
+  @@unique([firmId, code])
+  @@index([branchId, name])
+  @@index([phone])
+  @@index([gstin])
+  @@index([firmId])
+  @@map("customers")
+}
+
+model Supplier {
+  firmId         String
+  firm           Firm    @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id             String  @id @default(cuid())
+  code           String
+  name           String
+  company        String?
+  gstin          String?
+  pan            String?
+  phone          String?
+  email          String?
+  addressLine    String?
+  city           String?
+  state          String?
+  stateCode      String?
+  pincode        String?
+  paymentTerms   String?
+  creditDays     Int     @default(0)
+  openingBalance Decimal @default(0) @db.Decimal(12, 2)
+  isActive       Boolean @default(true)
+
+  // Rolled up from purchase invoices and supplier payments.
+  purchaseCount     Int     @default(0)
+  totalPurchased    Decimal @default(0) @db.Decimal(14, 2)
+  outstandingAmount Decimal @default(0) @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchaseOrders   PurchaseOrder[]
+  purchaseInvoices PurchaseInvoice[]
+  supplierPayments SupplierPayment[]
+  purchaseReturns  PurchaseReturn[]
+  payments         Payment[]
+  journalEntries   JournalEntry[]
+
+  @@unique([firmId, code])
+  @@index([firmId, name])
+  @@index([gstin])
+  @@map("suppliers")
+}
+
+// ============================================================================
+// SALES — QUOTATION → SALES ORDER → INVOICE → PAYMENT
+// ============================================================================
+
+model Quotation {
+  firmId          String
+  firm            Firm            @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id              String          @id @default(cuid())
+  quotationNumber String          @unique
+  branchId        String
+  branch          Branch          @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId      String
+  customer        Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  status          QuotationStatus @default(DRAFT)
+  taxMode         TaxMode         @default(NON_GST)
+
+  quotationDate DateTime
+  validUntil    DateTime?
+
+  subtotal       Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  discountRemarks String?
+  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  roundOff       Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount    Decimal @default(0) @db.Decimal(12, 2)
+
+  notes String?
+  terms String?
+
+  createdById          String?
+  createdBy            User?        @relation("QuotationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  convertedInvoices    Invoice[]    @relation("QuotationConverted")
+  convertedSalesOrders SalesOrder[]
+  convertedAt          DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines QuotationLine[]
+
+  @@index([branchId, status])
+  @@index([customerId])
+  @@index([firmId, status])
+  @@index([quotationDate])
+  @@map("quotations")
+}
+
+model QuotationLine {
+  id              String          @id @default(cuid())
+  quotationId     String
+  quotation       Quotation       @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId       String?
+  variant         ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  description     String
+  hsnCode         String?
+  quantity        Int
+  unitPrice       Decimal         @db.Decimal(12, 2)
+  discountPercent Decimal         @default(0) @db.Decimal(5, 2)
+  gstRate         Decimal         @default(0) @db.Decimal(5, 2)
+  lineTotal       Decimal         @db.Decimal(12, 2)
+  serialNumbers   String[]
+
+  @@index([quotationId])
+  @@map("quotation_lines")
+}
+
+model SalesOrder {
+  firmId      String
+  firm        Firm             @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id          String           @id @default(cuid())
+  orderNumber String           @unique
+  branchId    String
+  branch      Branch           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId  String
+  customer    Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  quotationId String?
+  quotation   Quotation?       @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  status      SalesOrderStatus @default(DRAFT)
+  taxMode     TaxMode          @default(NON_GST)
+
+  orderDate    DateTime
+  expectedDate DateTime?
+  notes        String?
+
+  subtotal       Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  discountRemarks String?
+  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount    Decimal @default(0) @db.Decimal(12, 2)
+
+  createdById String?
+  createdBy   User?     @relation("SalesOrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  invoices    Invoice[] @relation("SalesOrderInvoice")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines SalesOrderLine[]
+
+  @@index([branchId, status])
+  @@index([customerId])
+  @@index([quotationId])
+  @@index([firmId, status])
+  @@map("sales_orders")
+}
+
+model SalesOrderLine {
+  id              String          @id @default(cuid())
+  orderId         String
+  order           SalesOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId       String?
+  variant         ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  description     String
+  hsnCode         String?
+  quantity        Int
+  unitPrice       Decimal         @db.Decimal(12, 2)
+  discountPercent Decimal         @default(0) @db.Decimal(5, 2)
+  gstRate         Decimal         @default(0) @db.Decimal(5, 2)
+  lineTotal       Decimal         @db.Decimal(12, 2)
+  invoicedQty     Int             @default(0)
+
+  @@index([orderId])
+  @@map("sales_order_lines")
+}
+
+/// The sales document. A TAX_INVOICE is only ever created in GST access mode;
+/// a NON_GST_BILL only in NON_GST mode. `firmId + accessMode + financialYear`
+/// sequences are allocated separately so the two never collide.
+model Invoice {
+  firmId        String
+  firm          Firm          @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique
+  kind          InvoiceKind   @default(NON_GST_BILL)
+  status        InvoiceStatus @default(ISSUED)
+  branchId      String
+  branch        Branch        @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId    String
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  taxMode       TaxMode       @default(NON_GST)
+  financialYear String        @default("26-27")
+
+  // Snapshot of customer billing details at issue time.
+  billToName    String
+  billToPhone   String?
+  billToEmail   String?
+  billToAddress String?
+  billToGstin   String?
+  /// Place of supply state name — decides CGST+SGST vs IGST together with
+  /// the seller's own state.
+  placeOfSupply String?
+
+  // Source documents.
+  quotationId  String?
+  quotation    Quotation?  @relation("QuotationConverted", fields: [quotationId], references: [id], onDelete: SetNull)
+  salesOrderId String?
+  salesOrder   SalesOrder? @relation("SalesOrderInvoice", fields: [salesOrderId], references: [id], onDelete: SetNull)
+
+  invoiceDate DateTime  @default(now())
+  dueDate     DateTime?
+
+  subtotal       Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  discountRemarks String?
+  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  roundOff       Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount    Decimal @default(0) @db.Decimal(12, 2)
+  amountPaid     Decimal @default(0) @db.Decimal(12, 2)
+  amountDue      Decimal @default(0) @db.Decimal(12, 2)
+
+  /// Dispatch / e-way details printed on the invoice PDF.
+  dispatchThrough String?
+  vehicleNumber   String?
+  ewayBillNumber  String?
+  buyerOrderNo    String?
+
+  notes String?
+  terms String?
+
+  cancelledAt        DateTime?
+  cancellationReason String?
+
+  createdById String?
+  createdBy   User?   @relation("InvoiceIssuedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines           InvoiceLine[]
+  payments        Payment[]
+  salesReturns    SalesReturn[]
+  serialUnitsSold SerialUnit[]  @relation("SerialSoldInvoice")
+  warranties      Warranty[]
+
+  @@index([branchId, invoiceDate])
+  @@index([customerId])
+  @@index([status])
+  @@index([kind])
+  @@index([firmId, taxMode, financialYear])
+  @@index([invoiceDate])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id              String          @id @default(cuid())
+  invoiceId       String
+  invoice         Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId       String?
+  variant         ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  description     String
+  hsnCode         String?
+  serialNumbers   String? // newline-separated serials sold on this line
+  quantity        Int
+  unitPrice       Decimal         @db.Decimal(12, 2)
+  discountPercent Decimal         @default(0) @db.Decimal(5, 2)
+  gstRate         Decimal         @default(0) @db.Decimal(5, 2)
+  taxableValue    Decimal         @default(0) @db.Decimal(12, 2)
+  cgstAmount      Decimal         @default(0) @db.Decimal(12, 2)
+  sgstAmount      Decimal         @default(0) @db.Decimal(12, 2)
+  igstAmount      Decimal         @default(0) @db.Decimal(12, 2)
+  lineTotal       Decimal         @db.Decimal(12, 2)
+  returnedQty     Int             @default(0)
+
+  serialUnits SerialUnit[] @relation("SerialSoldLine")
+
+  @@index([invoiceId])
+  @@index([productId])
+  @@map("invoice_lines")
+}
+
+model SalesReturn {
+  firmId       String
+  firm         Firm              @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id           String            @id @default(cuid())
+  returnNumber String            @unique
+  branchId     String
+  branch       Branch            @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  invoiceId    String
+  invoice      Invoice           @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  customerId   String
+  customer     Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  status       SalesReturnStatus @default(PENDING)
+  taxMode      TaxMode           @default(NON_GST)
+
+  reason       String
+  refundMethod PaymentMethod @default(CASH)
+  totalAmount  Decimal       @default(0) @db.Decimal(12, 2)
+
+  createdById  String?
+  createdBy    User?     @relation("ReturnCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  approvedById String?
+  approvedBy   User?     @relation("ReturnApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines   SalesReturnLine[]
+  refunds Payment[]
+
+  @@index([branchId, status])
+  @@index([invoiceId])
+  @@index([customerId])
+  @@index([firmId, status])
+  @@map("sales_returns")
+}
+
+model SalesReturnLine {
+  id            String          @id @default(cuid())
+  returnId      String
+  salesReturn   SalesReturn     @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId     String?
+  variant       ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  invoiceLineId String?
+  description   String
+  serialNumbers String? // newline-separated serials being returned
+  quantity      Int
+  unitPrice     Decimal         @db.Decimal(12, 2)
+  gstRate       Decimal         @default(0) @db.Decimal(5, 2)
+  lineTotal     Decimal         @db.Decimal(12, 2)
+
+  @@index([returnId])
+  @@index([productId])
+  @@map("sales_return_lines")
+}
+
+// ============================================================================
+// PAYMENTS
+// ============================================================================
+
+/// Customer receipts, supplier payments, refunds and advances — one ledger.
+model Payment {
+  firmId        String
+  firm          Firm             @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id            String           @id @default(cuid())
+  paymentNumber String           @unique
+  branchId      String
+  branch        Branch           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  direction     PaymentDirection
+  status        PaymentStatus    @default(PAID)
+
+  customerId        String?
+  customer          Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplierId        String?
+  supplier          Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  invoiceId         String?
+  invoice           Invoice?         @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  purchaseInvoiceId String?
+  purchaseInvoice   PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id], onDelete: SetNull)
+  salesReturnId     String?
+  salesReturn       SalesReturn?     @relation(fields: [salesReturnId], references: [id], onDelete: SetNull)
+
+  amount    Decimal       @db.Decimal(12, 2)
+  method    PaymentMethod @default(CASH)
+  /// True for payments recorded before any invoice (advances / on-account).
+  isAdvance Boolean       @default(false)
+  reference String?
+  notes     String?
+
+  paidAt       DateTime @default(now())
+  receivedById String?
+  receivedBy   User?    @relation("PaymentReceivedBy", fields: [receivedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([branchId, paidAt])
+  @@index([customerId])
+  @@index([supplierId])
+  @@index([invoiceId])
+  @@index([firmId, paidAt])
+  @@map("payments")
+}
+
+// ============================================================================
+// PURCHASES — PO → GRN → PURCHASE INVOICE → PAYMENT → RETURN
+// ============================================================================
+
+model PurchaseOrder {
+  firmId     String
+  firm       Firm                @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id         String              @id @default(cuid())
+  poNumber   String              @unique
+  supplierId String
+  supplier   Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  branchId   String
+  branch     Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  status     PurchaseOrderStatus @default(DRAFT)
+  taxMode    TaxMode             @default(NON_GST)
+
+  orderDate    DateTime  @default(now())
+  expectedDate DateTime?
+
+  subtotal       Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  total          Decimal @default(0) @db.Decimal(12, 2)
+  notes          String?
+
+  createdById String?
+  createdBy   User?   @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items    PurchaseOrderLine[]
+  receipts GoodsReceipt[]
+  invoices PurchaseInvoice[]
+  returns  PurchaseReturn[]
+
+  @@index([supplierId])
+  @@index([branchId, status])
+  @@index([firmId, status])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id               String          @id @default(cuid())
+  poId             String
+  po               PurchaseOrder   @relation(fields: [poId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId        String?
+  variant          ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  description      String
+  hsnCode          String?
+  quantity         Int
+  receivedQuantity Int             @default(0)
+  unitPrice        Decimal         @db.Decimal(12, 2)
+  discountPercent  Decimal         @default(0) @db.Decimal(5, 2)
+  gstRate          Decimal         @default(0) @db.Decimal(5, 2)
+  lineTotal        Decimal         @db.Decimal(12, 2)
+
+  @@index([poId])
+  @@index([productId])
+  @@map("purchase_order_lines")
+}
+
+model GoodsReceipt {
+  firmId       String
+  firm         Firm           @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id           String         @id @default(cuid())
+  grnNumber    String         @unique
+  /// Null when goods arrive without a purchase order (over-the-counter buys).
+  poId         String?
+  po           PurchaseOrder? @relation(fields: [poId], references: [id], onDelete: SetNull)
+  branchId     String
+  branch       Branch         @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  receivedAt   DateTime       @default(now())
+  notes        String?
+  receivedById String?
+  receivedBy   User?          @relation("GoodsReceivedBy", fields: [receivedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  items GoodsReceiptLine[]
+
+  @@index([poId])
+  @@index([branchId, receivedAt])
+  @@map("goods_receipts")
+}
+
+model GoodsReceiptLine {
+  id            String          @id @default(cuid())
+  grnId         String
+  grn           GoodsReceipt    @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId     String?
+  variant       ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  quantity      Int
+  unitPrice     Decimal         @default(0) @db.Decimal(12, 2)
+  serialNumbers String? // newline-separated serials received
+
+  @@index([grnId])
+  @@index([productId])
+  @@map("goods_receipt_lines")
+}
+
+model PurchaseInvoice {
+  firmId        String
+  firm          Firm                  @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id            String                @id @default(cuid())
+  invoiceNumber String
+  supplierRef   String? // supplier's own bill number
+  supplierId    String
+  supplier      Supplier              @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  poId          String?
+  po            PurchaseOrder?        @relation(fields: [poId], references: [id], onDelete: SetNull)
+  branchId      String
+  branch        Branch                @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  status        PurchaseInvoiceStatus @default(UNPAID)
+  taxMode       TaxMode               @default(NON_GST)
+
+  invoiceDate DateTime  @default(now())
+  dueDate     DateTime?
+
+  subtotal       Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  total          Decimal @default(0) @db.Decimal(12, 2)
+  amountPaid     Decimal @default(0) @db.Decimal(12, 2)
+  notes          String?
+
+  createdById String?
+  createdBy   User?   @relation("PurchaseInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines           PurchaseInvoiceLine[]
+  payments        SupplierPayment[]
+  serialUnits     SerialUnit[]
+  purchaseReturns PurchaseReturn[]
+  paymentRecords  Payment[]
+
+  @@unique([firmId, supplierId, invoiceNumber])
+  @@index([supplierId])
+  @@index([branchId, invoiceDate])
+  @@index([status])
+  @@index([firmId, status])
+  @@map("purchase_invoices")
+}
+
+model PurchaseInvoiceLine {
+  id              String          @id @default(cuid())
+  invoiceId       String
+  invoice         PurchaseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId       String?
+  variant         ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  description     String
+  hsnCode         String?
+  serialNumbers   String? // newline-separated serials received on this line
+  quantity        Int
+  unitPrice       Decimal         @db.Decimal(12, 2)
+  discountPercent Decimal         @default(0) @db.Decimal(5, 2)
+  gstRate         Decimal         @default(0) @db.Decimal(5, 2)
+  lineTotal       Decimal         @db.Decimal(12, 2)
+  returnedQty     Int             @default(0)
+
+  @@index([invoiceId])
+  @@index([productId])
+  @@map("purchase_invoice_lines")
+}
+
+model SupplierPayment {
+  id            String           @id @default(cuid())
+  paymentNumber String           @unique
+  firmId        String
+  firm          Firm             @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  supplierId    String
+  supplier      Supplier         @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  invoiceId     String?
+  invoice       PurchaseInvoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  branchId      String
+  branch        Branch           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  amount        Decimal          @db.Decimal(12, 2)
+  method        PaymentMethod    @default(BANK_TRANSFER)
+  reference     String?
+  notes         String?
+  paidAt        DateTime         @default(now())
+  paidById      String?
+  paidBy        User?            @relation("SupplierPaymentPaidBy", fields: [paidById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([supplierId])
+  @@index([branchId, paidAt])
+  @@index([firmId, paidAt])
+  @@map("supplier_payments")
+}
+
+model PurchaseReturn {
+  firmId            String
+  firm              Firm             @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id                String           @id @default(cuid())
+  returnNumber      String           @unique
+  supplierId        String
+  supplier          Supplier         @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  poId              String?
+  po                PurchaseOrder?   @relation(fields: [poId], references: [id], onDelete: SetNull)
+  purchaseInvoiceId String?
+  purchaseInvoice   PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id], onDelete: SetNull)
+  branchId          String
+  branch            Branch           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  reason            String
+  taxMode           TaxMode          @default(NON_GST)
+  total             Decimal          @default(0) @db.Decimal(12, 2)
+  returnedAt        DateTime         @default(now())
+  createdById       String?
+  createdBy         User?            @relation("PurchaseReturnCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items PurchaseReturnLine[]
+
+  @@index([supplierId])
+  @@index([branchId, returnedAt])
+  @@index([firmId, returnedAt])
+  @@map("purchase_returns")
+}
+
+model PurchaseReturnLine {
+  id             String          @id @default(cuid())
+  returnId       String
+  purchaseReturn PurchaseReturn  @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId      String?
+  variant        ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  description    String
+  serialNumbers  String? // exact serials being returned for tracked products
+  quantity       Int
+  unitPrice      Decimal         @default(0) @db.Decimal(12, 2)
+  gstRate        Decimal         @default(0) @db.Decimal(5, 2)
+  lineTotal      Decimal         @default(0) @db.Decimal(12, 2)
+
+  @@index([returnId])
+  @@index([productId])
+  @@map("purchase_return_lines")
+}
+
+// ============================================================================
+// EXPENSES
+// ============================================================================
+
+model Expense {
+  firmId        String
+  firm          Firm            @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id            String          @id @default(cuid())
+  expenseNumber String          @unique
+  branchId      String
+  branch        Branch          @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  category      ExpenseCategory @default(OTHER)
+  status        ExpenseStatus   @default(PENDING)
+  amount        Decimal         @db.Decimal(12, 2)
+  description   String
+  paidTo        String?
+  paymentMethod PaymentMethod   @default(CASH)
+  reference     String?
+  attachmentUrl String?
+  expenseDate   DateTime        @default(now())
+
+  createdById  String?
+  createdBy    User?     @relation("ExpenseCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  approvedById String?
+  approvedBy   User?     @relation("ExpenseApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([branchId, expenseDate])
+  @@index([category])
+  @@index([firmId, expenseDate])
+  @@map("expenses")
+}
+
+// ============================================================================
+// GENERAL JOURNAL / ADJUSTMENTS
+// ============================================================================
+
+enum JournalEntryType {
+  DEBIT_ADJUSTMENT
+  CREDIT_ADJUSTMENT
+  DISCOUNT_ALLOWED
+  DISCOUNT_RECEIVED
+}
+
+/// Manual adjustments and discounts that are not a sale, purchase or payment:
+/// customer/supplier debit & credit notes, discounts allowed/received and
+/// general journal lines. Feeds the party ledgers, Discount ledger and
+/// General Journal ledger.
+model JournalEntry {
+  id          String           @id @default(cuid())
+  entryNumber String           @unique
+  firmId      String
+  firm        Firm             @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  type        JournalEntryType
+  customerId  String?
+  customer    Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplierId  String?
+  supplier    Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  amount      Decimal          @db.Decimal(12, 2)
+  entryDate   DateTime         @default(now())
+  narration   String
+  reference   String?
+  createdById String?
+
+  createdAt DateTime @default(now())
+
+  @@index([firmId, entryDate])
+  @@index([customerId])
+  @@index([supplierId])
+  @@map("journal_entries")
+}
+
+// ============================================================================
+// WARRANTY
+// ============================================================================
+
+/// Created automatically when a serialized product is sold; one record per
+/// serial per invoice line.
+model Warranty {
+  firmId       String
+  firm         Firm        @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id           String      @id @default(cuid())
+  productId    String
+  product      Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  serialUnitId String?
+  serialUnit   SerialUnit? @relation(fields: [serialUnitId], references: [id], onDelete: SetNull)
+  customerId   String?
+  customer     Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  invoiceId    String?
+  invoice      Invoice?    @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  branchId     String?
+  branch       Branch?     @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  serialNumber   String?
+  imei           String?
+  warrantyStart  DateTime
+  warrantyEnd    DateTime
+  warrantyMonths Int            @default(0)
+  warrantyType   WarrantyType   @default(STANDARD)
+  status         WarrantyStatus @default(ACTIVE)
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([serialNumber])
+  @@index([imei])
+  @@index([customerId])
+  @@index([invoiceId])
+  @@index([warrantyEnd])
+  @@index([firmId, status])
+  @@map("warranties")
+}
+
+model WhatsAppTemplate {
+  firmId    String
+  firm      Firm                @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id        String              @id @default(cuid())
+  code      WhatsAppMessageType
+  name      String
+  body      String              @db.Text
+  isActive  Boolean             @default(true)
+  updatedAt DateTime            @updatedAt
+
+  @@unique([firmId, code])
+  @@index([firmId])
+  @@map("whatsapp_templates")
+}
+
+model WhatsAppLog {
+  id           String              @id @default(cuid())
+  firmId       String
+  firm         Firm                @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  customerId   String?
+  customer     Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  invoiceId    String?
+  quotationId  String?
+  phone        String
+  messageType  WhatsAppMessageType @default(CUSTOM)
+  messageText  String              @db.Text
+  documentName String?
+  documentUrl  String?
+  status       String              @default("QUEUED")
+  externalId   String?
+  errorMessage String?
+  sentByUserId String?
+  sentByUser   User?               @relation("WhatsAppSentBy", fields: [sentByUserId], references: [id], onDelete: SetNull)
+  sentAt       DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([customerId])
+  @@index([invoiceId])
+  @@index([status])
+  @@index([firmId, sentAt])
+  @@map("whatsapp_logs")
+}
+
+// ============================================================================
+// BULK INVOICE IMPORT — upload → extract → review → approve → draft
+// ============================================================================
+// Staging area only. Nothing here moves stock or posts money: an approved
+// supplier invoice becomes a DRAFT purchase order through the purchases
+// service, and goods still have to be received through the normal workflow.
+
+enum InvoiceImportBatchStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  CANCELLED
+}
+
+enum InvoiceImportStatus {
+  QUEUED
+  PROCESSING
+  NEEDS_REVIEW
+  READY
+  FAILED
+  DUPLICATE
+  APPROVED
+  POSTED
+  REJECTED
+}
+
+enum InvoiceImportDirection {
+  SALES
+  PURCHASE
+  UNKNOWN
+}
+
+model InvoiceImportBatch {
+  id           String                   @id @default(cuid())
+  firmId       String
+  firm         Firm                     @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  branchId     String?
+  name         String
+  status       InvoiceImportBatchStatus @default(QUEUED)
+  totalFiles   Int                      @default(0)
+  /// Archive entries that were not imported, with the reason ([{path, reason}]).
+  skippedFiles Json?
+  createdById  String?
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  completedAt  DateTime?
+
+  documents InvoiceImportDocument[]
+
+  @@index([firmId, createdAt])
+  @@map("invoice_import_batches")
+}
+
+model InvoiceImportDocument {
+  id               String                 @id @default(cuid())
+  firmId           String
+  firm             Firm                   @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  batchId          String
+  batch            InvoiceImportBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  sourceFilename   String
+  /// Path inside the uploaded archive ("technic/186.zip!/186.pdf").
+  sourcePath       String
+  sha256           String
+  mimeType         String
+  fileSize         Int
+  pageCount        Int?
+  status           InvoiceImportStatus    @default(QUEUED)
+  direction        InvoiceImportDirection @default(UNKNOWN)
+  extractionMethod String?
+  layoutId         String?
+
+  // Background processing
+  attempts    Int       @default(0)
+  lastError   String?
+  lockedAt    DateTime?
+  processedAt DateTime?
+
+  /// Text in reading order, verbatim.
+  rawText    String? @db.Text
+  /// The original extraction. Written once per processing run, never edited.
+  extraction Json?
+  /// The reviewed values (DraftInvoice). Edited on the review screen.
+  draft      Json?
+  /// Latest validation + product-matching result for `draft`.
+  evaluation Json?
+  /// Reviewer-confirmed products: { [lineNo]: productId }.
+  assignments Json?
+  /// Discrepancies a reviewer accepted, with reasons: [{code, field, reason, userId, at}].
+  acknowledgements Json?
+
+  // Denormalised for lists, search and duplicate detection.
+  invoiceNumber   String?
+  invoiceDate     DateTime?
+  partyName       String?
+  partyGstin      String?
+  grandTotal      Decimal?  @db.Decimal(14, 2)
+  calculatedTotal Decimal?  @db.Decimal(14, 2)
+  confidence      Decimal?  @db.Decimal(4, 3)
+  errorCount      Int       @default(0)
+  warningCount    Int       @default(0)
+  duplicateOfId   String?
+  duplicateReason String?
+
+  /// "direction|party|invoice number", set when approved. Unique per firm, so
+  /// the same invoice can never be approved (and drafted) twice.
+  importKey String?
+
+  reviewedById    String?
+  reviewedAt      DateTime?
+  approvedById    String?
+  approvedAt      DateTime?
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectionReason String?
+  postedEntity    String?
+  postedEntityId  String?
+  postedAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  file InvoiceImportFile?
+
+  @@unique([firmId, importKey])
+  @@index([firmId, status])
+  @@index([batchId])
+  @@index([firmId, sha256])
+  @@index([firmId, invoiceNumber])
+  @@map("invoice_import_documents")
+}
+
+/// Source file bytes, kept apart so list queries never load them. Served only
+/// through an authenticated route — never from /public.
+model InvoiceImportFile {
+  documentId String                @id
+  document   InvoiceImportDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  data       Bytes
+
+  @@map("invoice_import_files")
+}
+
+/// Reviewer-confirmed mapping from invoice text to a catalogue product.
+/// partyKey "" = firm-wide; otherwise "GSTIN:<gstin>" or "NAME:<name>" so a
+/// supplier's own product codes map only for that supplier.
+model InvoiceImportProductAlias {
+  id          String   @id @default(cuid())
+  firmId      String
+  firm        Firm     @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  partyKey    String   @default("")
+  aliasKey    String
+  rawText     String
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@unique([firmId, partyKey, aliasKey])
+  @@index([productId])
+  @@map("invoice_import_product_aliases")
+}
