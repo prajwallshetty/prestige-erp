@@ -15,6 +15,10 @@ import {
   writeStockTransaction,
 } from "@/lib/services/inventory";
 import { round2 } from "@/lib/money";
+import type { Prisma } from "@/generated/prisma/client";
+import { getSalesConfig } from "@/lib/services/sales-config";
+import { applyStageChange } from "@/lib/services/leads";
+import { discountNeedsApproval, effectiveDiscountPercent } from "@/lib/sales-config";
 
 /**
  * Sales service: quotations → sales orders → invoices. Invoice creation follows
@@ -47,9 +51,60 @@ export interface QuotationInput {
   lines: SaleLineInput[];
   userId?: string | null;
   manualRoundOff?: number | null;
+  /** Lead the quotation is raised for (must already be authorised by the caller). */
+  leadId?: string | null;
+  /** Owning salesperson; defaults to the creator. */
+  assignedToId?: string | null;
+  /** Whether the saving user may approve over-limit discounts (quotation.approve_discount). */
+  canApproveDiscount?: boolean;
 }
 
 const round = round2;
+
+type Tx = Prisma.TransactionClient;
+
+/**
+ * Review state after a content save. Over-limit discounts always need an
+ * approver: a user who can approve gets it recorded as APPROVED, anyone else
+ * puts the quotation in the PENDING queue (and invalidates an earlier approval,
+ * because the content changed). Without an over-limit discount, a stale
+ * APPROVED/REJECTED state returns to NONE and an explicit submission to
+ * PENDING is kept.
+ */
+export function reviewStateAfterSave(
+  current: "NONE" | "PENDING" | "APPROVED" | "REJECTED",
+  needsApproval: boolean,
+  canApprove: boolean,
+): "NONE" | "PENDING" | "APPROVED" | "REJECTED" {
+  if (needsApproval) return canApprove ? "APPROVED" : "PENDING";
+  if (current === "APPROVED" || current === "REJECTED") return "NONE";
+  return current;
+}
+
+async function writeRevision(
+  tx: Tx,
+  quotationId: string,
+  userId: string | null | undefined,
+  changeNote: string,
+) {
+  const full = await tx.quotation.findUniqueOrThrow({ where: { id: quotationId }, include: { lines: true } });
+  await tx.quotationRevision.create({
+    data: {
+      quotationId,
+      revision: full.revision,
+      changeNote,
+      // JSON round-trip turns Decimals/Dates into plain serialisable values.
+      snapshot: JSON.parse(JSON.stringify(full)),
+      totalAmount: full.totalAmount,
+      changedById: userId ?? null,
+    },
+  });
+}
+
+async function assertQuotationOwner(firmId: string, userId: string) {
+  const owner = await prisma.user.findFirst({ where: { id: userId, firmId, status: "ACTIVE" }, select: { id: true } });
+  if (!owner) throw new BusinessRuleError("The selected salesperson is not an active user of this firm");
+}
 
 function lineDescription(
   product: { name: string; sku: string },
@@ -80,7 +135,12 @@ async function buildLinesWithTax(
       : null;
     if (line.variantId && !variant) throw new NotFoundError("Product variant not found");
     if (line.quantity <= 0) throw new BusinessRuleError("Quantity must be greater than zero");
+    if (!Number.isInteger(line.quantity)) throw new BusinessRuleError("Quantity must be a whole number");
     if (line.unitPrice < 0) throw new BusinessRuleError("Price cannot be negative");
+    if ((line.discountPercent ?? 0) < 0 || (line.discountPercent ?? 0) > 100) {
+      throw new BusinessRuleError("Discount must be between 0% and 100%");
+    }
+    if ((line.gstRate ?? 0) < 0 || (line.gstRate ?? 0) > 100) throw new BusinessRuleError("Invalid tax rate");
     return { line, product, variant };
   });
 
@@ -111,6 +171,25 @@ export async function createQuotation(input: QuotationInput) {
   const sameState = isSameState(sellerState, supplyState);
   const { enriched, summary } = await buildLinesWithTax(input.lines, input.taxMode, sameState, input.manualRoundOff);
 
+  const config = await getSalesConfig(input.firmId);
+  const discountPct = effectiveDiscountPercent(summary.subtotal, summary.discountAmount);
+  const needsApproval = discountNeedsApproval(discountPct, config.maxStaffDiscountPercent);
+  const canApprove = input.canApproveDiscount === true;
+
+  if (input.leadId) {
+    const lead = await prisma.lead.findFirst({
+      where: { id: input.leadId, firmId: input.firmId },
+      select: { customerId: true, stage: true },
+    });
+    if (!lead) throw new NotFoundError("Lead not found");
+    if (lead.customerId !== input.customerId) {
+      throw new BusinessRuleError("The quotation customer must be the lead's customer");
+    }
+    if (lead.stage === "LOST") throw new BusinessRuleError("Reopen this lost lead before quoting it");
+  }
+  const assignedToId = input.assignedToId ?? input.userId ?? null;
+  if (assignedToId && assignedToId !== input.userId) await assertQuotationOwner(input.firmId, assignedToId);
+
   const quotationNumber = await nextDocumentNumber(
     input.firmId,
     DOCUMENT_TYPES.QUOTATION,
@@ -120,6 +199,12 @@ export async function createQuotation(input: QuotationInput) {
   return prisma.$transaction(async (tx) => {
     const quotation = await tx.quotation.create({
       data: {
+        leadId: input.leadId ?? null,
+        assignedToId,
+        discountPercentEffective: discountPct,
+        reviewStatus: reviewStateAfterSave("NONE", needsApproval, canApprove),
+        reviewedById: needsApproval && canApprove ? input.userId ?? null : null,
+        reviewedAt: needsApproval && canApprove ? new Date() : null,
         quotationNumber,
         firmId: input.firmId,
         branchId: input.branchId,
@@ -157,6 +242,20 @@ export async function createQuotation(input: QuotationInput) {
       },
     });
 
+    await writeRevision(tx, quotation.id, input.userId, "Created");
+    if (input.leadId) {
+      await tx.leadActivity.create({
+        data: {
+          firmId: input.firmId,
+          leadId: input.leadId,
+          type: "QUOTATION",
+          notes: `Quotation ${quotation.quotationNumber} created`,
+          createdById: input.userId ?? null,
+        },
+      });
+      await tx.lead.update({ where: { id: input.leadId }, data: { lastActivityAt: new Date() } });
+    }
+
     await recordAudit({
       action: "QUOTATION_CREATED",
       entity: "Quotation",
@@ -165,7 +264,13 @@ export async function createQuotation(input: QuotationInput) {
       firmId: input.firmId,
       branchId: input.branchId,
       userId: input.userId,
-      after: { total: Number(quotation.totalAmount) },
+      after: {
+        total: Number(quotation.totalAmount),
+        leadId: input.leadId ?? null,
+        assignedToId,
+        discountPercent: discountPct,
+        reviewStatus: quotation.reviewStatus,
+      },
     });
 
     return quotation;
@@ -191,6 +296,159 @@ export async function updateQuotationStatus(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Sharing & manager review
+// ---------------------------------------------------------------------------
+
+/**
+ * Records that a quotation was handed to the customer (WhatsApp / email / PDF
+ * download). Moves DRAFT → SENT and advances the linked lead to "Quotation
+ * sent". A quotation whose discount still needs approval cannot be sent.
+ */
+export async function markQuotationShared(
+  firmId: string,
+  quotationId: string,
+  via: string,
+  userId?: string | null,
+) {
+  const quotation = await prisma.quotation.findFirst({ where: { id: quotationId, firmId } });
+  if (!quotation) throw new NotFoundError("Quotation not found");
+  if (["CONVERTED", "REJECTED", "EXPIRED"].includes(quotation.status)) {
+    throw new BusinessRuleError(`A ${quotation.status.toLowerCase()} quotation cannot be sent`);
+  }
+  const config = await getSalesConfig(firmId);
+  const needsApproval = discountNeedsApproval(Number(quotation.discountPercentEffective), config.maxStaffDiscountPercent);
+  if (needsApproval && quotation.reviewStatus !== "APPROVED") {
+    throw new BusinessRuleError(
+      `The discount (${Number(quotation.discountPercentEffective)}%) is above the ${config.maxStaffDiscountPercent}% limit — a manager must approve this quotation before it is sent`,
+    );
+  }
+  const channel = via.trim().slice(0, 40) || "other";
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.quotation.update({
+      where: { id: quotation.id },
+      data: { sharedAt: new Date(), sharedVia: channel, status: quotation.status === "DRAFT" ? "SENT" : quotation.status },
+    });
+    if (quotation.leadId) {
+      const lead = await tx.lead.findUnique({ where: { id: quotation.leadId }, select: { id: true, firmId: true, stage: true } });
+      if (lead) {
+        if (["NEW", "CONTACTED", "QUALIFIED"].includes(lead.stage)) {
+          await applyStageChange(tx, lead, "QUOTATION_SENT", { userId, notes: `Quotation ${quotation.quotationNumber} sent` });
+        }
+        await tx.leadActivity.create({
+          data: {
+            firmId,
+            leadId: lead.id,
+            type: "QUOTATION",
+            notes: `Quotation ${quotation.quotationNumber} shared via ${channel}`,
+            createdById: userId ?? null,
+          },
+        });
+        await tx.lead.update({ where: { id: lead.id }, data: { lastActivityAt: new Date() } });
+      }
+    }
+    return row;
+  });
+  await recordAudit({
+    action: "QUOTATION_SHARED",
+    entity: "Quotation",
+    entityId: quotation.id,
+    summary: `${quotation.quotationNumber} shared via ${channel}`,
+    firmId,
+    branchId: quotation.branchId,
+    userId,
+  });
+  return updated;
+}
+
+/** Salesperson asks a manager to review a quotation. */
+export async function submitQuotationForReview(firmId: string, quotationId: string, userId?: string | null) {
+  const quotation = await prisma.quotation.findFirst({ where: { id: quotationId, firmId } });
+  if (!quotation) throw new NotFoundError("Quotation not found");
+  if (["CONVERTED", "REJECTED", "EXPIRED"].includes(quotation.status)) {
+    throw new BusinessRuleError(`A ${quotation.status.toLowerCase()} quotation cannot be submitted for review`);
+  }
+  if (quotation.reviewStatus === "PENDING") throw new BusinessRuleError("This quotation is already awaiting review");
+  if (quotation.reviewStatus === "APPROVED") throw new BusinessRuleError("This quotation is already approved");
+  const updated = await prisma.quotation.update({
+    where: { id: quotation.id },
+    data: { reviewStatus: "PENDING", reviewNotes: null, reviewedAt: null, reviewedById: null },
+  });
+  await recordAudit({
+    action: "QUOTATION_REVIEWED",
+    entity: "Quotation",
+    entityId: quotation.id,
+    summary: `${quotation.quotationNumber} submitted for manager review`,
+    firmId,
+    branchId: quotation.branchId,
+    userId,
+    before: { reviewStatus: quotation.reviewStatus },
+    after: { reviewStatus: "PENDING" },
+  });
+  return updated;
+}
+
+/**
+ * Manager decision on a quotation. Approving an over-limit discount needs
+ * `quotation.approve_discount` (passed in as `canApproveDiscount`); rejecting
+ * always needs a note so the salesperson knows what to change.
+ */
+export async function reviewQuotation(
+  firmId: string,
+  quotationId: string,
+  input: { decision: "APPROVE" | "REJECT"; notes?: string | null; userId: string; canApproveDiscount: boolean },
+) {
+  const quotation = await prisma.quotation.findFirst({ where: { id: quotationId, firmId } });
+  if (!quotation) throw new NotFoundError("Quotation not found");
+  if (quotation.status === "CONVERTED") throw new BusinessRuleError("A converted quotation cannot be reviewed");
+  if (quotation.reviewStatus !== "PENDING") {
+    throw new BusinessRuleError("Only quotations awaiting review can be approved or sent back");
+  }
+  const notes = input.notes?.trim() || null;
+  if (input.decision === "REJECT" && !notes) {
+    throw new BusinessRuleError("Say what needs to change so the salesperson can fix it");
+  }
+  if (input.decision === "APPROVE") {
+    const config = await getSalesConfig(firmId);
+    const overLimit = discountNeedsApproval(Number(quotation.discountPercentEffective), config.maxStaffDiscountPercent);
+    if (overLimit && !input.canApproveDiscount) {
+      throw new BusinessRuleError("You are not permitted to approve a discount above the configured limit");
+    }
+  }
+  const status = input.decision === "APPROVE" ? "APPROVED" : "REJECTED";
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.quotation.update({
+      where: { id: quotation.id },
+      data: { reviewStatus: status, reviewedById: input.userId, reviewedAt: new Date(), reviewNotes: notes },
+    });
+    if (quotation.leadId) {
+      await tx.leadActivity.create({
+        data: {
+          firmId,
+          leadId: quotation.leadId,
+          type: "QUOTATION",
+          notes: `Quotation ${quotation.quotationNumber} ${input.decision === "APPROVE" ? "approved" : "sent back"} by manager${notes ? `: ${notes}` : ""}`,
+          createdById: input.userId,
+        },
+      });
+    }
+    return row;
+  });
+  await recordAudit({
+    action: "QUOTATION_REVIEWED",
+    entity: "Quotation",
+    entityId: quotation.id,
+    summary: `${quotation.quotationNumber} ${status.toLowerCase()}${notes ? `: ${notes}` : ""}`,
+    firmId,
+    branchId: quotation.branchId,
+    userId: input.userId,
+    before: { reviewStatus: quotation.reviewStatus },
+    after: { reviewStatus: status, discountPercent: Number(quotation.discountPercentEffective) },
+  });
+  return updated;
+}
+
 export interface UpdateQuotationInput {
   firmId: string;
   quotationId: string;
@@ -205,6 +463,11 @@ export interface UpdateQuotationInput {
   lines?: SaleLineInput[];
   userId?: string | null;
   manualRoundOff?: number | null;
+  /** Reassign the owning salesperson (caller must hold leads.assign). */
+  assignedToId?: string | null;
+  canApproveDiscount?: boolean;
+  /** Short note stored with the new revision. */
+  changeNote?: string | null;
 }
 
 export async function updateQuotation(input: UpdateQuotationInput) {
@@ -239,6 +502,29 @@ export async function updateQuotation(input: UpdateQuotationInput) {
 
   const { enriched, summary } = await buildLinesWithTax(linesToUse, targetTaxMode, sameState, input.manualRoundOff);
 
+  const config = await getSalesConfig(input.firmId);
+  const discountPct = effectiveDiscountPercent(summary.subtotal, summary.discountAmount);
+  const needsApproval = discountNeedsApproval(discountPct, config.maxStaffDiscountPercent);
+  const canApprove = input.canApproveDiscount === true;
+  const nextReview = reviewStateAfterSave(quotation.reviewStatus, needsApproval, canApprove);
+  if (
+    input.status &&
+    ["SENT", "ACCEPTED"].includes(input.status) &&
+    needsApproval &&
+    nextReview !== "APPROVED"
+  ) {
+    throw new BusinessRuleError(
+      `This quotation's discount (${discountPct}%) is above the ${config.maxStaffDiscountPercent}% limit — it needs manager approval before it can be sent`,
+    );
+  }
+  if (input.assignedToId) await assertQuotationOwner(input.firmId, input.assignedToId);
+  if (quotation.leadId && targetCustomerId !== quotation.customerId) {
+    const lead = await prisma.lead.findFirst({ where: { id: quotation.leadId }, select: { customerId: true } });
+    if (lead?.customerId !== targetCustomerId) {
+      throw new BusinessRuleError("A quotation raised for a lead must stay with the lead's customer");
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     await tx.quotationLine.deleteMany({
       where: { quotationId: quotation.id },
@@ -247,6 +533,14 @@ export async function updateQuotation(input: UpdateQuotationInput) {
     await tx.quotation.update({
       where: { id: quotation.id },
       data: {
+        revision: { increment: 1 },
+        discountPercentEffective: discountPct,
+        reviewStatus: nextReview,
+        ...(nextReview === "APPROVED" && quotation.reviewStatus !== "APPROVED"
+          ? { reviewedById: input.userId ?? null, reviewedAt: new Date() }
+          : {}),
+        ...(nextReview === "NONE" || nextReview === "PENDING" ? { reviewNotes: null } : {}),
+        ...(input.assignedToId ? { assignedToId: input.assignedToId } : {}),
         customerId: targetCustomerId,
         taxMode: targetTaxMode,
         quotationDate: input.quotationDate ?? quotation.quotationDate,
@@ -286,16 +580,18 @@ export async function updateQuotation(input: UpdateQuotationInput) {
       where: { id: quotation.id },
       include: { lines: true },
     });
+    await writeRevision(tx, quotation.id, input.userId, input.changeNote?.trim() || `Edited (revision ${updated.revision})`);
 
     await recordAudit({
-      action: "QUOTATION_CREATED",
+      action: "QUOTATION_UPDATED",
       entity: "Quotation",
       entityId: quotation.id,
-      summary: `Quotation updated: ${quotation.quotationNumber} (${modeLabel(targetTaxMode)})`,
+      summary: `Quotation updated: ${quotation.quotationNumber} r${updated.revision} (${modeLabel(targetTaxMode)})`,
       firmId: input.firmId,
       branchId: quotation.branchId,
       userId: input.userId,
-      after: { total: Number(updated.totalAmount) },
+      before: { total: Number(quotation.totalAmount), status: quotation.status, reviewStatus: quotation.reviewStatus },
+      after: { total: Number(updated.totalAmount), status: updated.status, reviewStatus: updated.reviewStatus, discountPercent: discountPct },
     });
 
     return updated;
@@ -306,6 +602,7 @@ export async function deleteQuotation(
   firmId: string,
   quotationId: string,
   userId?: string | null,
+  options: { onlyDraft?: boolean } = {},
 ) {
   const quotation = await prisma.quotation.findFirst({
     where: { id: quotationId, firmId },
@@ -321,6 +618,9 @@ export async function deleteQuotation(
     quotation.convertedSalesOrders.length > 0
   ) {
     throw new BusinessRuleError("Cannot delete a converted quotation");
+  }
+  if (options.onlyDraft && quotation.status !== "DRAFT") {
+    throw new BusinessRuleError("Only draft quotations can be deleted — ask a manager to remove a sent quotation");
   }
 
   return prisma.$transaction(async (tx) => {
@@ -437,6 +737,14 @@ export interface InvoiceInput {
   paymentMethod?: "CASH" | "UPI" | "CARD" | "BANK_TRANSFER" | "CHEQUE" | "OTHER";
   userId?: string | null;
   manualRoundOff?: number | null;
+  /**
+   * Runs inside the invoice transaction after the invoice and its lines exist.
+   * Throwing rolls the whole invoice back (used by quotation conversion to
+   * verify totals and update the lead atomically).
+   */
+  afterCreate?: (tx: Tx, invoice: { id: string; invoiceNumber: string; totalAmount: Prisma.Decimal; amountDue: Prisma.Decimal }) => Promise<void>;
+  /** Set when the invoice is a quotation conversion by a user lacking review rights, etc. */
+  conversionReview?: { reviewedById: string };
 }
 
 /**
@@ -496,16 +804,48 @@ export async function createInvoice(input: InvoiceInput) {
     }
   }
 
-  const invoiceNumber = await nextDocumentNumber(
-    input.firmId,
-    DOCUMENT_TYPES.INVOICE,
-    input.taxMode,
-    prisma,
-    input.invoiceDate ?? new Date(),
-  );
+  // Quotation conversions take their number inside the transaction, after the
+  // quotation claim: a request that loses a concurrent-conversion race rolls
+  // back without burning an invoice number (no gaps in the legal sequence).
+  let invoiceNumber: string = input.quotationId
+    ? ""
+    : await nextDocumentNumber(
+        input.firmId,
+        DOCUMENT_TYPES.INVOICE,
+        input.taxMode,
+        prisma,
+        input.invoiceDate ?? new Date(),
+      );
   const financialYear = financialYearFor(input.invoiceDate ?? new Date());
 
   return prisma.$transaction(async (tx) => {
+    // Claim the quotation first. The conditional UPDATE takes the row lock, so
+    // two simultaneous conversions serialise here and the loser matches zero
+    // rows once the winner commits — no duplicate invoice can be created.
+    if (input.quotationId) {
+      const claim = await tx.quotation.updateMany({
+        where: { id: input.quotationId, firmId: input.firmId, status: { notIn: ["CONVERTED"] } },
+        data: {
+          status: "CONVERTED",
+          convertedAt: new Date(),
+          convertedById: input.userId ?? null,
+          ...(input.conversionReview
+            ? { reviewStatus: "APPROVED", reviewedById: input.conversionReview.reviewedById, reviewedAt: new Date() }
+            : {}),
+        },
+      });
+      if (claim.count !== 1) {
+        throw new BusinessRuleError("This quotation has already been converted to an invoice");
+      }
+      invoiceNumber = await nextDocumentNumber(
+        input.firmId,
+        DOCUMENT_TYPES.INVOICE,
+        input.taxMode,
+        tx,
+        input.invoiceDate ?? new Date(),
+      );
+    }
+
     const invoice = await tx.invoice.create({
       data: {
         invoiceNumber,
@@ -667,13 +1007,6 @@ export async function createInvoice(input: InvoiceInput) {
       });
     }
 
-    // Mark quotation converted.
-    if (input.quotationId) {
-      await tx.quotation.update({
-        where: { id: input.quotationId },
-        data: { status: "CONVERTED", convertedAt: new Date() },
-      });
-    }
     if (input.salesOrderId) {
       await tx.salesOrder.update({
         where: { id: input.salesOrderId },
@@ -683,6 +1016,14 @@ export async function createInvoice(input: InvoiceInput) {
 
     // Customer rollup.
     await recalcCustomerRollup(tx, input.firmId, customer.id);
+
+    if (input.afterCreate) {
+      const fresh = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        select: { id: true, invoiceNumber: true, totalAmount: true, amountDue: true },
+      });
+      await input.afterCreate(tx, fresh);
+    }
 
     await recordAudit({
       action: "INVOICE_CREATED",
@@ -1208,10 +1549,26 @@ export async function deleteInvoice(
         where: { quotationId: invoice.quotationId, id: { not: invoice.id } },
       });
       if (remaining === 0) {
-        await tx.quotation.update({
+        const reverted = await tx.quotation.update({
           where: { id: invoice.quotationId },
-          data: { status: "ACCEPTED", convertedAt: null },
+          data: { status: "ACCEPTED", convertedAt: null, convertedById: null },
+          select: { leadId: true },
         });
+        // The sale this lead was won on no longer exists — reopen the lead.
+        if (reverted.leadId) {
+          const lead = await tx.lead.findUnique({ where: { id: reverted.leadId }, select: { id: true, firmId: true, stage: true } });
+          if (lead?.stage === "WON") {
+            const otherSales = await tx.invoice.count({
+              where: { quotation: { leadId: lead.id }, status: { not: "CANCELLED" }, id: { not: invoice.id } },
+            });
+            if (otherSales === 0) {
+              await applyStageChange(tx, lead, "NEGOTIATION", {
+                userId,
+                notes: `Invoice ${invoice.invoiceNumber} was deleted — lead reopened`,
+              });
+            }
+          }
+        }
       }
     }
     if (invoice.salesOrderId) {
@@ -1295,10 +1652,16 @@ export async function getInvoiceForView(
 export async function getQuotationForView(
   firmId: string,
   quotationId: string,
-  options: { taxMode?: TaxMode } = {},
+  options: { taxMode?: TaxMode; scope?: Prisma.QuotationWhereInput } = {},
 ) {
   const quotation = await prisma.quotation.findFirst({
-    where: { id: quotationId, firmId, ...(options.taxMode ? { taxMode: options.taxMode } : {}) },
+    where: {
+      id: quotationId,
+      firmId,
+      ...(options.taxMode ? { taxMode: options.taxMode } : {}),
+      // Record-level access (ownership) supplied by the caller from the session.
+      ...(options.scope ? { AND: [options.scope] } : {}),
+    },
     include: {
       customer: true,
       branch: true,
@@ -1320,6 +1683,13 @@ export async function getQuotationForView(
         },
       },
       createdBy: { select: { name: true } },
+      assignedTo: { select: { id: true, name: true } },
+      reviewedBy: { select: { name: true } },
+      convertedBy: { select: { name: true } },
+      lead: { select: { id: true, leadNumber: true, name: true, source: true, campaign: { select: { id: true, name: true } } } },
+      convertedInvoices: {
+        select: { id: true, invoiceNumber: true, status: true, totalAmount: true, amountPaid: true, amountDue: true, invoiceDate: true },
+      },
     },
   });
   if (!quotation) throw new NotFoundError("Quotation not found");
@@ -1350,22 +1720,85 @@ export async function getSalesOrderForView(
   return order;
 }
 
-/** Quote → invoice conversion using the quotation's own lines. */
+/**
+ * Manager-controlled quote → invoice conversion.
+ *
+ * The caller (server action) has already checked `quotation.convert`. This
+ * function validates that the quotation is eligible, builds the invoice from the
+ * quotation's own lines, and — in ONE transaction — claims the quotation
+ * (so concurrent requests cannot both succeed), creates the invoice, verifies
+ * the totals still match, marks the linked lead as won and writes the audit
+ * trail. The original quotation and its revision history are never modified
+ * beyond status/conversion stamps.
+ */
 export async function convertQuotationToInvoice(
   firmId: string,
   quotationId: string,
-  options: { taxMode: TaxMode; paymentAmount?: number; paymentMethod?: InvoiceInput["paymentMethod"]; userId?: string | null },
+  options: {
+    taxMode: TaxMode;
+    paymentAmount?: number;
+    paymentMethod?: InvoiceInput["paymentMethod"];
+    userId?: string | null;
+    /** The converting user holds quotation.approve_discount. */
+    canApproveDiscount?: boolean;
+  },
 ) {
   const quotation = await prisma.quotation.findFirst({
     where: { id: quotationId, firmId },
-    include: { lines: true },
+    include: { lines: true, customer: true },
   });
   if (!quotation) throw new NotFoundError("Quotation not found");
+
+  // --- Eligibility -----------------------------------------------------------
   if (quotation.status === "CONVERTED") {
-    throw new BusinessRuleError("This quotation has already been converted");
+    throw new BusinessRuleError("This quotation has already been converted to an invoice");
+  }
+  if (quotation.status === "REJECTED" || quotation.status === "EXPIRED") {
+    throw new BusinessRuleError(`A ${quotation.status.toLowerCase()} quotation cannot be converted`);
+  }
+  if (quotation.validUntil && quotation.validUntil < new Date(new Date().setHours(0, 0, 0, 0))) {
+    throw new BusinessRuleError("This quotation has passed its validity date — extend the validity before converting");
+  }
+  if (quotation.reviewStatus === "REJECTED") {
+    throw new BusinessRuleError("This quotation was sent back for changes and has not been resubmitted");
+  }
+  if (quotation.lines.length === 0) throw new BusinessRuleError("The quotation has no items");
+  if (!quotation.customer.isActive) throw new BusinessRuleError("The customer is inactive");
+  if (!quotation.customer.name.trim() || !quotation.customer.phone.trim()) {
+    throw new BusinessRuleError("The customer's name and phone are required before invoicing");
   }
 
-  return createInvoice({
+  const config = await getSalesConfig(firmId);
+  const overLimit = discountNeedsApproval(Number(quotation.discountPercentEffective), config.maxStaffDiscountPercent);
+  if (overLimit && quotation.reviewStatus !== "APPROVED" && !options.canApproveDiscount) {
+    throw new BusinessRuleError(
+      `The discount (${Number(quotation.discountPercentEffective)}%) is above the ${config.maxStaffDiscountPercent}% limit and has not been approved`,
+    );
+  }
+
+  // Pricing sanity before anything is written.
+  const products = await prisma.product.findMany({
+    where: { id: { in: quotation.lines.map((l) => l.productId) } },
+    select: { id: true, status: true, name: true },
+  });
+  const productById = new Map(products.map((p) => [p.id, p]));
+  for (const line of quotation.lines) {
+    const product = productById.get(line.productId);
+    if (!product) throw new BusinessRuleError("A product on this quotation no longer exists");
+    if (product.status !== "ACTIVE") throw new BusinessRuleError(`${product.name} is inactive and cannot be invoiced`);
+    if (line.quantity <= 0) throw new BusinessRuleError(`Invalid quantity on ${line.description}`);
+    if (Number(line.unitPrice) < 0) throw new BusinessRuleError(`Invalid rate on ${line.description}`);
+    if (Number(line.discountPercent) < 0 || Number(line.discountPercent) > 100) {
+      throw new BusinessRuleError(`Invalid discount on ${line.description}`);
+    }
+  }
+
+  const quotedTotal = Number(quotation.totalAmount);
+  const lead = quotation.leadId
+    ? await prisma.lead.findUnique({ where: { id: quotation.leadId }, select: { id: true, firmId: true, stage: true } })
+    : null;
+
+  const invoice = await createInvoice({
     firmId,
     branchId: quotation.branchId,
     customerId: quotation.customerId,
@@ -1378,6 +1811,8 @@ export async function convertQuotationToInvoice(
     paymentAmount: options.paymentAmount,
     paymentMethod: options.paymentMethod,
     userId: options.userId,
+    conversionReview:
+      quotation.reviewStatus !== "APPROVED" && options.userId ? { reviewedById: options.userId } : undefined,
     lines: quotation.lines.map((line) => ({
       productId: line.productId,
       variantId: line.variantId,
@@ -1386,8 +1821,40 @@ export async function convertQuotationToInvoice(
       discountPercent: Number(line.discountPercent),
       gstRate: Number(line.gstRate),
       serialNumbers: line.serialNumbers,
+      // Keep the exact wording the customer saw on the quotation.
+      descriptionOverride: line.description,
     })),
+    afterCreate: async (tx, created) => {
+      // Totals must reproduce exactly what the customer was quoted.
+      if (Math.abs(Number(created.totalAmount) - quotedTotal) > 0.01) {
+        throw new BusinessRuleError(
+          `The invoice total (${Number(created.totalAmount).toFixed(2)}) differs from the quotation (${quotedTotal.toFixed(2)}). ` +
+            "Prices or taxes changed since the quotation was made — revise the quotation first.",
+        );
+      }
+      if (lead && lead.stage !== "WON") {
+        await applyStageChange(tx, lead, "WON", {
+          userId: options.userId,
+          notes: `Won — invoice ${created.invoiceNumber} raised from ${quotation.quotationNumber}`,
+        });
+      }
+      await tx.auditLog.create({
+        data: {
+          action: "QUOTATION_CONVERTED",
+          entity: "Quotation",
+          entityId: quotation.id,
+          summary: `${quotation.quotationNumber} (r${quotation.revision}) → ${created.invoiceNumber}`,
+          firmId,
+          branchId: quotation.branchId,
+          userId: options.userId ?? null,
+          before: { status: quotation.status, reviewStatus: quotation.reviewStatus, total: quotedTotal },
+          after: { status: "CONVERTED", invoiceId: created.id, invoiceNumber: created.invoiceNumber, total: Number(created.totalAmount) },
+        },
+      });
+    },
   });
+
+  return invoice;
 }
 
 export { db };

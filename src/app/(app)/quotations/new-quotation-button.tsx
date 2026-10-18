@@ -39,17 +39,8 @@ import {
   type QuickCustomer,
   type QuickProduct,
 } from "@/components/shared/quick-add";
+import { useProductSearch, VariantSelect } from "@/components/shared/product-picker";
 import { createQuotationAction } from "./actions";
-
-interface ProductOption {
-  id: string;
-  name: string;
-  subName?: string | null;
-  sku: string;
-  sellingPrice: number;
-  gstRate: number;
-  trackSerials: boolean;
-}
 
 interface CustomerOption {
   id: string;
@@ -60,6 +51,7 @@ interface CustomerOption {
 interface Line {
   key: number;
   productId: string;
+  variantId: string;
   /** Raw input text — kept as a string so the field can be cleared while editing. */
   quantity: string;
   /** Raw input text — kept as a string so the field can be cleared while editing. */
@@ -70,19 +62,37 @@ interface Line {
 
 let lineKey = 0;
 
-export function NewQuotationButton({ 
-  taxMode: initialTaxMode, 
-  canSwitchMode 
-}: { 
-  taxMode: "GST" | "NON_GST"; 
+export interface QuotationLeadContext {
+  leadId: string;
+  label: string;
+  customer: { id: string; name: string; phone: string } | null;
+}
+
+export function NewQuotationButton({
+  taxMode: initialTaxMode,
+  canSwitchMode,
+  lead,
+  defaultOpen = false,
+  salespeople = [],
+  currentUserId,
+}: {
+  taxMode: "GST" | "NON_GST";
   canSwitchMode: boolean;
+  /** Raise the quotation for this lead; the customer is fixed to the lead's customer. */
+  lead?: QuotationLeadContext;
+  defaultOpen?: boolean;
+  /** Offered only to users who may assign ownership. */
+  salespeople?: { id: string; name: string }[];
+  currentUserId?: string;
 }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
+  const [assignedToId, setAssignedToId] = useState(currentUserId ?? "");
   const [taxMode, setTaxMode] = useState<"GST" | "NON_GST">(initialTaxMode);
-  const [customers, setCustomers] = useState<CustomerOption[]>([]);
-  const [products, setProducts] = useState<ProductOption[]>([]);
-  const [customerId, setCustomerId] = useState("");
+  const [customers, setCustomers] = useState<CustomerOption[]>(lead?.customer ? [lead.customer] : []);
+  const catalogue = useProductSearch();
+  const { byId: productById } = catalogue;
+  const [customerId, setCustomerId] = useState(lead?.customer?.id ?? "");
   const [validUntil, setValidUntil] = useState("");
   const [notes, setNotes] = useState("");
   const [billDiscount, setBillDiscount] = useState("");
@@ -90,7 +100,7 @@ export function NewQuotationButton({
   const [discountRemarks, setDiscountRemarks] = useState("");
   const [roundOff, setRoundOff] = useState("");
   const [isManualRoundOff, setIsManualRoundOff] = useState(false);
-  const [lines, setLines] = useState<Line[]>([{ key: 0, productId: "", quantity: "1", unitPrice: "0", trackSerials: false, serials: [] }]);
+  const [lines, setLines] = useState<Line[]>([{ key: 0, productId: "", variantId: "", quantity: "1", unitPrice: "0", trackSerials: false, serials: [] }]);
   const [addProductOpen, setAddProductOpen] = useState(false);
   const [addCustomerOpen, setAddCustomerOpen] = useState(false);
   /** The line the product was requested from, so the new product lands there. */
@@ -98,49 +108,38 @@ export function NewQuotationButton({
   const [pending, startTransition] = useTransition();
 
   useEffect(() => {
-    if (!open || customers.length > 0) return;
-    Promise.all([
-      fetch("/api/customers").then((r) => (r.ok ? r.json() : { customers: [] })),
-      fetch("/api/products").then((r) => (r.ok ? r.json() : { products: [] })),
-    ])
-      .then(([customersRes, productsRes]) => {
-        setCustomers(customersRes.customers ?? []);
-        setProducts(productsRes.products ?? []);
-      })
-      .catch(() => {
-        setCustomers([]);
-        setProducts([]);
-      });
-  }, [open, customers.length]);
-
-  const productById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+    if (!open) return;
+    catalogue.search("");
+    if (lead) return; // customer is fixed by the lead
+    fetch("/api/customers")
+      .then((r) => (r.ok ? r.json() : { customers: [] }))
+      .then((res) => setCustomers(res.customers ?? []))
+      .catch(() => setCustomers([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const customerOptions: SearchableOption[] = customers.map((customer) => ({
     value: customer.id,
     label: customer.name,
     hint: customer.phone,
   }));
-  const productOptions: SearchableOption[] = products.map((product) => ({
-    value: product.id,
-    label: product.subName ? `${product.name} — ${product.subName}` : product.name,
-    hint: `${product.sku} · ${formatCurrency(product.sellingPrice)}`,
-  }));
 
   const setLine = (key: number, updates: Partial<Line>) =>
     setLines((current) => current.map((line) => (line.key === key ? { ...line, ...updates } : line)));
 
   const addLine = () =>
-    setLines((current) => [...current, { key: (lineKey += 1), productId: "", quantity: "1", unitPrice: "0", trackSerials: false, serials: [] }]);
+    setLines((current) => [...current, { key: (lineKey += 1), productId: "", variantId: "", quantity: "1", unitPrice: "0", trackSerials: false, serials: [] }]);
 
   /** A product created from inside this dialog: select it without leaving or resetting anything. */
   const onProductCreated = (created: QuickProduct) => {
-    setProducts((current) => [...current, { ...created }]);
+    catalogue.merge([{ ...created }]);
     setLines((current) => {
       const target =
         current.find((line) => line.key === addProductForLine && !line.productId) ??
         current.find((line) => !line.productId);
       const filled: Partial<Line> = {
         productId: created.id,
+        variantId: "",
         unitPrice: String(created.sellingPrice),
         trackSerials: created.trackSerials,
         serials: created.trackSerials ? [""] : [],
@@ -187,6 +186,8 @@ export function NewQuotationButton({
     startTransition(async () => {
       const result = await createQuotationAction({
         customerId,
+        leadId: lead?.leadId ?? null,
+        assignedToId: assignedToId || null,
         taxMode,
         validUntil: validUntil || null,
         notes: notes || null,
@@ -196,6 +197,7 @@ export function NewQuotationButton({
           const product = productById.get(line.productId);
           return {
             productId: line.productId,
+            variantId: line.variantId || null,
             quantity: parseNumericInput(line.quantity),
             unitPrice: parseNumericInput(line.unitPrice),
             discountPercent: totals.lines[index]?.effectiveDiscountPercent ?? 0,
@@ -205,10 +207,17 @@ export function NewQuotationButton({
         }),
       });
       if (result.ok) {
-        toast.success(`Quotation ${result.data.quotationNumber} created`);
+        toast.success(
+          result.data.reviewStatus === "PENDING"
+            ? `Quotation ${result.data.quotationNumber} created — discount needs manager approval before it can be sent`
+            : `Quotation ${result.data.quotationNumber} created`,
+        );
+        if (lead) {
+          router.push(`/quotations/${result.data.id}`);
+        }
         setOpen(false);
-        setLines([{ key: (lineKey += 1), productId: "", quantity: "1", unitPrice: "0", trackSerials: false, serials: [] }]);
-        setCustomerId("");
+        setLines([{ key: (lineKey += 1), productId: "", variantId: "", quantity: "1", unitPrice: "0", trackSerials: false, serials: [] }]);
+        if (!lead) setCustomerId("");
         setBillDiscount("");
         setDiscountRemarks("");
         setRoundOff("");
@@ -226,33 +235,57 @@ export function NewQuotationButton({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button>
-          <FileText /> New quotation
+          <FileText /> {lead ? "Create quotation" : "New quotation"}
         </Button>
       </DialogTrigger>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create quotation</DialogTitle>
           <DialogDescription>
-            An estimate you can convert to an invoice in one step.
+            {lead
+              ? `For lead ${lead.label}. A manager converts it to an invoice after review.`
+              : "A manager reviews the quotation and converts it to an invoice."}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <Label>Customer *</Label>
-              <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setAddCustomerOpen(true)}>
-                <UserPlus className="size-3" /> Add customer
-              </Button>
+              {lead ? null : (
+                <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setAddCustomerOpen(true)}>
+                  <UserPlus className="size-3" /> Add customer
+                </Button>
+              )}
             </div>
-            <SearchableSelect
-              ariaLabel="Customer"
-              options={customerOptions}
-              value={customerId}
-              onValueChange={setCustomerId}
-              placeholder="Search customer by name or phone…"
-              emptyMessage="No customers match"
-            />
+            {lead ? (
+              <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+                {lead.customer ? `${lead.customer.name} · ${lead.customer.phone}` : "The customer record is created from the lead when you save"}
+              </p>
+            ) : (
+              <SearchableSelect
+                ariaLabel="Customer"
+                options={customerOptions}
+                value={customerId}
+                onValueChange={setCustomerId}
+                placeholder="Search customer by name or phone…"
+                emptyMessage="No customers match"
+              />
+            )}
           </div>
+
+          {salespeople.length > 0 ? (
+            <div className="space-y-1.5">
+              <Label>Salesperson</Label>
+              <Select value={assignedToId} onValueChange={setAssignedToId}>
+                <SelectTrigger aria-label="Salesperson"><SelectValue placeholder="Assign a salesperson" /></SelectTrigger>
+                <SelectContent>
+                  {salespeople.map((person) => (
+                    <SelectItem key={person.id} value={person.id}>{person.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
 
           {canSwitchMode && (
             <div className="flex items-center justify-between">
@@ -279,12 +312,14 @@ export function NewQuotationButton({
                     <SearchableSelect
                       ariaLabel="Product"
                       className="flex-1"
-                      options={productOptions}
+                      options={catalogue.optionsFor(lines.map((l) => l.productId))}
                       value={line.productId}
+                      onQueryChange={(query) => catalogue.search(query)}
                       onValueChange={(value) => {
                         const product = productById.get(value);
                         setLine(line.key, {
                           productId: value,
+                          variantId: "",
                           unitPrice: String(product?.sellingPrice ?? 0),
                           trackSerials: product?.trackSerials ?? false,
                           serials: product?.trackSerials ? Array.from({ length: parseNumericInput(line.quantity) }, () => "") : [],
@@ -303,9 +338,19 @@ export function NewQuotationButton({
                       <Trash2 />
                     </Button>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <VariantSelect
+                      product={product}
+                      value={line.variantId}
+                      onChange={(variant) =>
+                        setLine(line.key, {
+                          variantId: variant?.id ?? "",
+                          unitPrice: String(variant?.sellingPrice || product?.sellingPrice || 0),
+                        })
+                      }
+                    />
                     <div className="w-24">
-                      <Label className="text-xs text-muted-foreground">Quantity</Label>
+                      <Label className="text-xs text-muted-foreground">Quantity{product?.unit ? ` (${product.unit})` : ""}</Label>
                       <Input
                         className="numeric h-8"
                         type="number"
@@ -569,7 +614,10 @@ export function NewQuotationButton({
           <Button variant="outline" onClick={() => setOpen(false)} disabled={pending}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={pending || !customerId || validLines.length === 0}>
+          <Button
+            onClick={submit}
+            disabled={pending || (!lead && !customerId) || validLines.length === 0}
+          >
             {pending ? "Saving…" : "Create quotation"}
           </Button>
         </DialogFooter>

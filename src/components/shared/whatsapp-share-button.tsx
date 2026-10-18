@@ -12,6 +12,8 @@ interface WhatsAppShareButtonProps {
   customerPhone?: string;
   size?: "default" | "sm" | "lg" | "icon";
   variant?: "outline" | "default" | "secondary";
+  /** Called once the document has actually been handed to WhatsApp (share sheet completed, or chat opened). */
+  onShared?: () => void;
 }
 
 export function WhatsAppShareButton({
@@ -21,6 +23,7 @@ export function WhatsAppShareButton({
   customerPhone,
   size = "default",
   variant = "outline",
+  onShared,
 }: WhatsAppShareButtonProps) {
   const [loading, setLoading] = useState(false);
 
@@ -55,6 +58,7 @@ export function WhatsAppShareButton({
             files: [pdfFile],
           });
           toast.success("PDF document shared via WhatsApp");
+          onShared?.();
           return;
         } catch (shareErr) {
           // If user manually cancels the native share sheet, return silently
@@ -79,6 +83,7 @@ export function WhatsAppShareButton({
 
       window.open(waUrl, "_blank");
       toast.success("PDF downloaded! WhatsApp opened — attach the downloaded PDF file into your chat.");
+      onShared?.();
     } catch (err) {
       console.error("WhatsApp share error:", err);
       toast.error("Failed to prepare PDF for WhatsApp sharing");

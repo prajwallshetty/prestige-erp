@@ -36,8 +36,26 @@ export const PERMISSIONS = {
   QUOTATION_CREATE: "quotation.create",
   QUOTATION_EDIT: "quotation.edit",
   QUOTATION_DELETE: "quotation.delete",
+  /** Convert a quotation to an invoice. Manager-controlled: NOT in the default Sales Staff set. */
   QUOTATION_CONVERT: "quotation.convert",
+  /** See quotations raised by other salespeople (team view). */
+  QUOTATION_VIEW_ALL: "quotation.view_all",
+  /** Review quotations submitted by sales staff. */
+  QUOTATION_REVIEW: "quotation.review",
+  /** Approve quotations whose discount exceeds the configured limit. */
+  QUOTATION_APPROVE_DISCOUNT: "quotation.approve_discount",
   SALES_RETURN_CREATE: "sales_return.create",
+
+  // Leads (CRM)
+  LEADS_VIEW: "leads.view",
+  LEADS_CREATE: "leads.create",
+  LEADS_EDIT: "leads.edit",
+  LEADS_VIEW_ALL: "leads.view_all",
+  LEADS_ASSIGN: "leads.assign",
+
+  // Marketing
+  MARKETING_VIEW: "marketing.view",
+  MARKETING_MANAGE: "marketing.manage",
 
   // Invoices
   INVOICE_VIEW: "invoice.view",
@@ -128,6 +146,15 @@ const MANAGER_PERMISSIONS: PermissionCode[] = [
   P.QUOTATION_EDIT,
   P.QUOTATION_DELETE,
   P.QUOTATION_CONVERT,
+  P.QUOTATION_VIEW_ALL,
+  P.QUOTATION_REVIEW,
+  P.QUOTATION_APPROVE_DISCOUNT,
+  P.LEADS_VIEW,
+  P.LEADS_CREATE,
+  P.LEADS_EDIT,
+  P.LEADS_VIEW_ALL,
+  P.LEADS_ASSIGN,
+  P.MARKETING_VIEW,
   P.SALES_RETURN_CREATE,
   P.INVOICE_VIEW,
   P.INVOICE_CREATE,
@@ -206,7 +233,11 @@ const SALES_STAFF_PERMISSIONS: PermissionCode[] = [
   P.QUOTATION_CREATE,
   P.QUOTATION_EDIT,
   P.QUOTATION_DELETE,
-  P.QUOTATION_CONVERT,
+  // quotation.convert is intentionally absent: invoicing is manager-controlled.
+  // It can still be granted to an individual user through a per-user override.
+  P.LEADS_VIEW,
+  P.LEADS_CREATE,
+  P.LEADS_EDIT,
   P.SALES_RETURN_CREATE,
   P.INVOICE_VIEW,
   P.INVOICE_CREATE,
@@ -257,6 +288,23 @@ const INVENTORY_MANAGER_PERMISSIONS: PermissionCode[] = [
   P.REPORTS_VIEW,
 ];
 
+/**
+ * Marketing — campaigns, lead sources and marketing analytics. Deliberately has
+ * no invoice, payment or customer-ledger permissions.
+ */
+const MARKETING_PERMISSIONS: PermissionCode[] = [
+  P.DASHBOARD_VIEW,
+  // Campaigns are firm-wide, so marketing reads leads across branches. This
+  // does not expose financial dashboards (dashboard.financials is separate).
+  P.DASHBOARD_VIEW_ALL_BRANCHES,
+  P.PRODUCT_VIEW,
+  P.MARKETING_VIEW,
+  P.MARKETING_MANAGE,
+  P.LEADS_VIEW,
+  P.LEADS_CREATE,
+  P.LEADS_VIEW_ALL,
+];
+
 /** Viewer — read-only access. */
 const VIEWER_PERMISSIONS: PermissionCode[] = [
   P.DASHBOARD_VIEW,
@@ -288,6 +336,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, PermissionCode[]> = {
   PURCHASE_STAFF: [...new Set(PURCHASE_STAFF_PERMISSIONS)],
   INVENTORY_MANAGER: [...new Set(INVENTORY_MANAGER_PERMISSIONS)],
   VIEWER: [...new Set(VIEWER_PERMISSIONS)],
+  MARKETING: [...new Set(MARKETING_PERMISSIONS)],
 };
 
 /** Roles that may see data across every branch (still bounded to their own firm). */
@@ -315,6 +364,7 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   PURCHASE_STAFF: "Purchase Staff",
   INVENTORY_MANAGER: "Inventory Manager",
   VIEWER: "Viewer",
+  MARKETING: "Marketing",
 };
 
 /** Where a user of this role should land right after login. */
@@ -323,10 +373,11 @@ export const ROLE_LANDING_PATH: Record<UserRole, string> = {
   ADMIN: "/dashboard",
   MANAGER: "/dashboard",
   ACCOUNTANT: "/dashboard",
-  SALES_STAFF: "/pos",
+  SALES_STAFF: "/leads",
   PURCHASE_STAFF: "/purchases",
   INVENTORY_MANAGER: "/inventory",
   VIEWER: "/dashboard",
+  MARKETING: "/marketing",
 };
 
 export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
@@ -352,7 +403,17 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   [P.QUOTATION_CREATE]: "Create quotations",
   [P.QUOTATION_EDIT]: "Edit quotations",
   [P.QUOTATION_DELETE]: "Delete quotations",
-  [P.QUOTATION_CONVERT]: "Convert quotations to invoices",
+  [P.QUOTATION_CONVERT]: "Convert quotations to invoices (manager-controlled)",
+  [P.QUOTATION_VIEW_ALL]: "View quotations created by other sales staff",
+  [P.QUOTATION_REVIEW]: "Review quotations submitted by sales staff",
+  [P.QUOTATION_APPROVE_DISCOUNT]: "Approve quotations whose discount exceeds the configured limit",
+  [P.LEADS_VIEW]: "View leads assigned to or created by you",
+  [P.LEADS_CREATE]: "Create leads",
+  [P.LEADS_EDIT]: "Edit leads, log interactions and follow-ups",
+  [P.LEADS_VIEW_ALL]: "View and manage every lead in scope, not just your own",
+  [P.LEADS_ASSIGN]: "Assign and reassign leads to sales staff",
+  [P.MARKETING_VIEW]: "View the marketing dashboard and campaign performance",
+  [P.MARKETING_MANAGE]: "Create and manage campaigns, lead sources and promotions",
   [P.SALES_RETURN_CREATE]: "Create sales returns",
   [P.INVOICE_VIEW]: "View invoices",
   [P.INVOICE_CREATE]: "Create invoices",

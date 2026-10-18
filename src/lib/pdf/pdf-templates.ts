@@ -293,6 +293,7 @@ export async function generateQuotationPDF(quotationId: string): Promise<{ buffe
       customer: true,
       branch: true,
       lines: { include: { product: { select: { name: true, subName: true } } } },
+      assignedTo: { select: { name: true } },
     },
   });
 
@@ -322,6 +323,8 @@ export async function generateQuotationPDF(quotationId: string): Promise<{ buffe
         ["Date :", formatDate(quotation.quotationDate)],
         ["Valid Until :", quotation.validUntil ? formatDate(quotation.validUntil) : ""],
         ["Type :", isGst ? "GST" : "NON-GST"],
+        ...(quotation.assignedTo ? [["Prepared by :", quotation.assignedTo.name] as [string, string]] : []),
+        ...(quotation.revision > 1 ? [["Revision :", `R${quotation.revision}`] as [string, string]] : []),
       ],
       toHeading: "Quotation For",
       to: {

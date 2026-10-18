@@ -10,6 +10,9 @@ import { Badge } from "@/components/ui/badge";
 import { ConvertForm } from "./convert-form";
 import { prisma } from "@/lib/prisma";
 import { requirePermissionInFirm } from "@/lib/session";
+import { quotationScopeWhere } from "@/lib/sales-scope";
+import { getSalesConfig } from "@/lib/services/sales-config";
+import { discountNeedsApproval } from "@/lib/sales-config";
 import { formatCurrency } from "@/lib/money";
 import { formatDate } from "@/lib/dates";
 
@@ -20,13 +23,32 @@ export default async function ConvertQuotationPage({ params }: { params: Promise
   const { id } = await params;
 
   const quotation = await prisma.quotation.findFirst({
-    where: { id, firmId: user.activeFirmId },
+    where: { id, ...quotationScopeWhere(user) },
     include: {
       customer: { select: { id: true, name: true, phone: true } },
       lines: true,
+      lead: { select: { id: true, leadNumber: true } },
+      assignedTo: { select: { name: true } },
     },
   });
   if (!quotation) notFound();
+
+  // Surface anything that will block the conversion before the manager clicks.
+  const config = await getSalesConfig(user.activeFirmId);
+  const blockers: string[] = [];
+  if (quotation.status === "CONVERTED") blockers.push("This quotation has already been converted.");
+  if (quotation.status === "REJECTED" || quotation.status === "EXPIRED") blockers.push(`This quotation is ${quotation.status.toLowerCase()}.`);
+  if (quotation.reviewStatus === "REJECTED") blockers.push("It was sent back to the salesperson and has not been resubmitted.");
+  if (quotation.validUntil && quotation.validUntil < new Date(new Date().setHours(0, 0, 0, 0))) {
+    blockers.push("Its validity date has passed — extend the validity first.");
+  }
+  if (
+    discountNeedsApproval(Number(quotation.discountPercentEffective), config.maxStaffDiscountPercent) &&
+    quotation.reviewStatus !== "APPROVED" &&
+    !user.permissions.includes("quotation.approve_discount")
+  ) {
+    blockers.push(`The discount (${Number(quotation.discountPercentEffective)}%) is above the ${config.maxStaffDiscountPercent}% limit and needs approval.`);
+  }
 
   const isGst = quotation.taxMode === "GST";
   const hasDiscount = Number(quotation.discountAmount) > 0 || quotation.lines.some((l) => Number(l.discountPercent) > 0);
@@ -35,9 +57,18 @@ export default async function ConvertQuotationPage({ params }: { params: Promise
     <div className="mx-auto max-w-3xl space-y-4">
       <PageHeader
         title={`Convert ${quotation.quotationNumber}`}
-        description={`${quotation.customer.name} · ${formatDate(quotation.quotationDate)}`}
+        description={`${quotation.customer.name} · ${formatDate(quotation.quotationDate)}${quotation.assignedTo ? ` · Salesperson: ${quotation.assignedTo.name}` : ""}${quotation.lead ? ` · Lead ${quotation.lead.leadNumber}` : ""} · Revision ${quotation.revision}`}
         backButton={<Button asChild variant="ghost" size="sm"><Link href="/quotations"><ArrowLeft className="mr-2 h-4 w-4" /> Back</Link></Button>}
       />
+
+      {blockers.length > 0 ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm" role="alert">
+          <p className="font-medium text-destructive">This quotation cannot be converted yet</p>
+          <ul className="mt-1 list-disc pl-5 text-muted-foreground">
+            {blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+          </ul>
+        </div>
+      ) : null}
 
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-base">Items</CardTitle></CardHeader>
@@ -144,6 +175,7 @@ export default async function ConvertQuotationPage({ params }: { params: Promise
         customerId={quotation.customerId}
         total={Number(quotation.totalAmount)}
         canCollectPayment={user.permissions.includes("payments.create")}
+        blocked={blockers.length > 0}
       />
     </div>
   );

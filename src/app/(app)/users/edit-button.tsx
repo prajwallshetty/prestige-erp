@@ -33,6 +33,7 @@ const ROLES = [
   { value: "SALES_STAFF", label: "Sales Staff" },
   { value: "PURCHASE_STAFF", label: "Purchase Staff" },
   { value: "INVENTORY_MANAGER", label: "Inventory Manager" },
+  { value: "MARKETING", label: "Marketing" },
   { value: "VIEWER", label: "Viewer" },
 ];
 

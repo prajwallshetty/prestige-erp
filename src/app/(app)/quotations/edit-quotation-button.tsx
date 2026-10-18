@@ -39,17 +39,8 @@ import {
   type QuickCustomer,
   type QuickProduct,
 } from "@/components/shared/quick-add";
+import { useProductSearch, VariantSelect, type PickerProduct } from "@/components/shared/product-picker";
 import { updateQuotationAction } from "./actions";
-
-interface ProductOption {
-  id: string;
-  name: string;
-  subName?: string | null;
-  sku: string;
-  sellingPrice: number;
-  gstRate: number;
-  trackSerials: boolean;
-}
 
 interface CustomerOption {
   id: string;
@@ -60,6 +51,7 @@ interface CustomerOption {
 interface Line {
   key: number;
   productId: string;
+  variantId: string;
   quantity: string;
   unitPrice: string;
   trackSerials: boolean;
@@ -80,10 +72,13 @@ export interface QuotationProp {
   terms?: string | null;
   discountRemarks?: string | null;
   customerId: string;
+  leadId?: string | null;
+  assignedToId?: string | null;
   customer?: { id?: string; name: string; phone?: string | null };
   lines: Array<{
     id?: string;
     productId: string;
+    variantId?: string | null;
     product?: {
       id?: string;
       name: string;
@@ -112,6 +107,7 @@ function formatDateForInput(dateVal?: Date | string | null): string {
 export function EditQuotationButton({
   quotation,
   canSwitchMode = true,
+  salespeople = [],
   defaultOpen = false,
   triggerVariant = "outline",
   triggerSize = "sm",
@@ -120,6 +116,8 @@ export function EditQuotationButton({
 }: {
   quotation: QuotationProp;
   canSwitchMode?: boolean;
+  /** Offered only to users who may reassign ownership. */
+  salespeople?: { id: string; name: string }[];
   defaultOpen?: boolean;
   triggerVariant?: "default" | "outline" | "ghost" | "secondary";
   triggerSize?: "default" | "sm" | "icon" | "icon-sm";
@@ -137,6 +135,8 @@ export function EditQuotationButton({
       : "DRAFT",
   );
   const [customerId, setCustomerId] = useState(quotation.customerId);
+  const [assignedToId, setAssignedToId] = useState(quotation.assignedToId ?? "");
+  const [changeNote, setChangeNote] = useState("");
   const [quotationDate, setQuotationDate] = useState(formatDateForInput(quotation.quotationDate));
   const [validUntil, setValidUntil] = useState(formatDateForInput(quotation.validUntil));
   const [notes, setNotes] = useState(quotation.notes ?? "");
@@ -161,24 +161,22 @@ export function EditQuotationButton({
     return [];
   });
 
-  // Seed product list with items from the quotation lines
-  const [products, setProducts] = useState<ProductOption[]>(() => {
-    const list: ProductOption[] = [];
-    for (const line of quotation.lines) {
-      if (line.product) {
-        list.push({
-          id: line.productId,
-          name: line.product.name,
-          subName: line.product.subName ?? null,
-          sku: line.product.sku ?? "",
-          sellingPrice: Number(line.product.sellingPrice ?? line.unitPrice),
-          gstRate: Number(line.product.gstRate ?? line.gstRate ?? 18),
-          trackSerials: Boolean(line.product.trackSerials),
-        });
-      }
-    }
-    return list;
-  });
+  // Seed the catalogue with the quotation's own products; the full records
+  // (variants, stock) are hydrated from the server when the dialog opens.
+  const catalogue = useProductSearch(
+    quotation.lines
+      .filter((line) => line.product)
+      .map((line): PickerProduct => ({
+        id: line.productId,
+        name: line.product!.name,
+        subName: line.product!.subName ?? null,
+        sku: line.product!.sku ?? "",
+        sellingPrice: Number(line.product!.sellingPrice ?? line.unitPrice),
+        gstRate: Number(line.product!.gstRate ?? line.gstRate ?? 18),
+        trackSerials: Boolean(line.product!.trackSerials),
+      })),
+  );
+  const { byId: productById } = catalogue;
 
   let lineCounter = 1;
   const [lines, setLines] = useState<Line[]>(() => {
@@ -192,6 +190,7 @@ export function EditQuotationButton({
       return {
         key: index + 1,
         productId: l.productId,
+        variantId: l.variantId ?? "",
         quantity: String(l.quantity),
         unitPrice: String(Number(l.unitPrice)),
         trackSerials: Boolean(l.product?.trackSerials ?? serials.length > 0),
@@ -207,30 +206,21 @@ export function EditQuotationButton({
 
   useEffect(() => {
     if (!open) return;
-    Promise.all([
-      fetch("/api/customers").then((r) => (r.ok ? r.json() : { customers: [] })),
-      fetch("/api/products").then((r) => (r.ok ? r.json() : { products: [] })),
-    ])
-      .then(([customersRes, productsRes]) => {
-        const fetchedCustomers: CustomerOption[] = customersRes.customers ?? [];
-        const fetchedProducts: ProductOption[] = productsRes.products ?? [];
-
+    catalogue.hydrate([...new Set(quotation.lines.map((l) => l.productId))]);
+    catalogue.search("");
+    fetch("/api/customers")
+      .then((r) => (r.ok ? r.json() : { customers: [] }))
+      .then((res) => {
+        const fetched: CustomerOption[] = res.customers ?? [];
         setCustomers((curr) => {
           const map = new Map(curr.map((c) => [c.id, c]));
-          for (const c of fetchedCustomers) map.set(c.id, c);
-          return Array.from(map.values());
-        });
-
-        setProducts((curr) => {
-          const map = new Map(curr.map((p) => [p.id, p]));
-          for (const p of fetchedProducts) map.set(p.id, p);
+          for (const c of fetched) map.set(c.id, c);
           return Array.from(map.values());
         });
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
-
-  const productById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
   const customerOptions: SearchableOption[] = customers.map((c) => ({
     value: c.id,
@@ -238,11 +228,6 @@ export function EditQuotationButton({
     hint: c.phone,
   }));
 
-  const productOptions: SearchableOption[] = products.map((p) => ({
-    value: p.id,
-    label: p.subName ? `${p.name} — ${p.subName}` : p.name,
-    hint: `${p.sku} · ${formatCurrency(p.sellingPrice)}`,
-  }));
 
   const setLine = (key: number, updates: Partial<Line>) =>
     setLines((curr) => curr.map((line) => (line.key === key ? { ...line, ...updates } : line)));
@@ -254,6 +239,7 @@ export function EditQuotationButton({
       {
         key: Date.now() + Math.random(),
         productId: "",
+        variantId: "",
         quantity: "1",
         unitPrice: "0",
         trackSerials: false,
@@ -263,13 +249,14 @@ export function EditQuotationButton({
   };
 
   const onProductCreated = (created: QuickProduct) => {
-    setProducts((curr) => [...curr, { ...created }]);
+    catalogue.merge([{ ...created }]);
     setLines((curr) => {
       const target =
         curr.find((line) => line.key === addProductForLine && !line.productId) ??
         curr.find((line) => !line.productId);
       const filled: Partial<Line> = {
         productId: created.id,
+        variantId: "",
         unitPrice: String(created.sellingPrice),
         trackSerials: created.trackSerials,
         serials: created.trackSerials ? [""] : [],
@@ -317,6 +304,8 @@ export function EditQuotationButton({
       const result = await updateQuotationAction({
         quotationId: quotation.id,
         customerId,
+        assignedToId: assignedToId || null,
+        changeNote: changeNote || null,
         taxMode,
         quotationDate: quotationDate || null,
         validUntil: validUntil || null,
@@ -329,6 +318,7 @@ export function EditQuotationButton({
           const product = productById.get(line.productId);
           return {
             productId: line.productId,
+            variantId: line.variantId || null,
             quantity: parseNumericInput(line.quantity),
             unitPrice: parseNumericInput(line.unitPrice),
             discountPercent: totals.lines[index]?.effectiveDiscountPercent ?? 0,
@@ -470,12 +460,14 @@ export function EditQuotationButton({
                     <SearchableSelect
                       ariaLabel="Product"
                       className="flex-1"
-                      options={productOptions}
+                      options={catalogue.optionsFor(lines.map((l) => l.productId))}
                       value={line.productId}
+                      onQueryChange={(query) => catalogue.search(query)}
                       onValueChange={(value) => {
                         const p = productById.get(value);
                         setLine(line.key, {
                           productId: value,
+                          variantId: "",
                           unitPrice: String(p?.sellingPrice ?? 0),
                           trackSerials: p?.trackSerials ?? false,
                           serials: p?.trackSerials
@@ -498,6 +490,16 @@ export function EditQuotationButton({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
+                    <VariantSelect
+                      product={productById.get(line.productId)}
+                      value={line.variantId}
+                      onChange={(variant) =>
+                        setLine(line.key, {
+                          variantId: variant?.id ?? "",
+                          unitPrice: String(variant?.sellingPrice || productById.get(line.productId)?.sellingPrice || 0),
+                        })
+                      }
+                    />
                     <div className="w-24">
                       <Label className="text-[11px] text-muted-foreground">Quantity</Label>
                       <Input
@@ -759,6 +761,30 @@ export function EditQuotationButton({
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder="Notes printed on the quotation"
+            />
+          </div>
+
+          {salespeople.length > 0 ? (
+            <div className="space-y-1.5">
+              <Label>Salesperson</Label>
+              <Select value={assignedToId} onValueChange={setAssignedToId}>
+                <SelectTrigger aria-label="Salesperson"><SelectValue placeholder="Assign a salesperson" /></SelectTrigger>
+                <SelectContent>
+                  {salespeople.map((person) => (
+                    <SelectItem key={person.id} value={person.id}>{person.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-quote-change">What changed? (saved with this revision)</Label>
+            <Input
+              id="edit-quote-change"
+              value={changeNote}
+              onChange={(e) => setChangeNote(e.target.value)}
+              placeholder="e.g. Customer asked for 800x800 instead of 600x600"
             />
           </div>
 
