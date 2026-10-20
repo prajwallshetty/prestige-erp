@@ -26,7 +26,8 @@
     "invoice-import:report": "tsx scripts/invoice-import-report.ts",
     "invoice-import:worker": "tsx --env-file=.env --import ./scripts/support/allow-server-only.mjs scripts/invoice-import-worker.ts",
     "invoice-import:post-sales": "tsx --env-file=.env --import ./scripts/support/allow-server-only.mjs scripts/post-imported-sales-invoices.ts",
-    "test:numbering": "tsx --import ./scripts/support/allow-server-only.mjs --test tests/numbering/*.test.ts"
+    "test:numbering": "tsx --import ./scripts/support/allow-server-only.mjs --test tests/numbering/*.test.ts",
+    "test:tile-erp": "tsx --import ./scripts/support/allow-server-only.mjs --import ./tests/support/mock-next.mjs --test tests/tile-erp/*.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -15,11 +15,14 @@ export function ConvertForm({
   customerId,
   total,
   canCollectPayment,
+  blocked = false,
 }: {
   quotationId: string;
   customerId: string;
   total: number;
   canCollectPayment: boolean;
+  /** Server-detected reasons the conversion would be refused. */
+  blocked?: boolean;
 }) {
   const router = useRouter();
   const [paymentAmount, setPaymentAmount] = useState("");
@@ -67,7 +70,7 @@ export function ConvertForm({
             </Select>
           </div>
         ) : null}
-        <Button className="w-full" size="lg" onClick={submit} disabled={pending}>
+        <Button className="w-full" size="lg" onClick={submit} disabled={pending || blocked}>
           {pending ? "Converting…" : "Create invoice"}
         </Button>
       </CardContent>

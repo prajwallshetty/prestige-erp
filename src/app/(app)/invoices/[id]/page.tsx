@@ -280,7 +280,16 @@ export default async function InvoiceDetailPage({
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base">References</CardTitle></CardHeader>
             <CardContent className="space-y-1 text-sm text-muted-foreground">
-              {invoice.quotation ? <p>Quotation: {invoice.quotation.quotationNumber}</p> : null}
+              {invoice.quotation ? (
+                <p>
+                  Quotation:{" "}
+                  {user.permissions.includes("quotation.view") ? (
+                    <Link href={`/quotations/${invoice.quotationId}`} className="text-primary hover:underline">{invoice.quotation.quotationNumber}</Link>
+                  ) : (
+                    invoice.quotation.quotationNumber
+                  )}
+                </p>
+              ) : null}
               {invoice.salesOrder ? <p>Sales order: {invoice.salesOrder.orderNumber}</p> : null}
               {invoice.createdBy ? <p>Issued by {invoice.createdBy.name}</p> : null}
               <p>Financial year {invoice.financialYear}</p>

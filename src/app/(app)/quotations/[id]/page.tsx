@@ -8,9 +8,13 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { WhatsAppShareButton } from "@/components/shared/whatsapp-share-button";
 import { getQuotationForView } from "@/lib/services/sales";
 import { requirePermissionInFirm, taxModeWhere } from "@/lib/session";
+import { quotationScopeWhere } from "@/lib/sales-scope";
+import { getSalesConfig } from "@/lib/services/sales-config";
+import { discountNeedsApproval, REVIEW_STATUS_LABELS } from "@/lib/sales-config";
+import { prisma } from "@/lib/prisma";
+import { QuotationReviewActions, QuotationShare } from "./quotation-workflow";
 import { formatCurrency } from "@/lib/money";
 import { formatDate } from "@/lib/dates";
 import { QUOTATION_STATUS_LABELS } from "@/lib/workflow";
@@ -35,7 +39,10 @@ export default async function QuotationDetailPage({
 
   let quotation;
   try {
-    quotation = await getQuotationForView(user.activeFirmId, id, { ...taxModeWhere(user) });
+    quotation = await getQuotationForView(user.activeFirmId, id, {
+      ...taxModeWhere(user),
+      scope: quotationScopeWhere(user),
+    });
   } catch (error) {
     if (error instanceof NotFoundError) notFound();
     throw error;
@@ -43,6 +50,31 @@ export default async function QuotationDetailPage({
 
   if (quotation.firmId !== user.activeFirmId) notFound();
 
+  const [config, revisions, salespeople] = await Promise.all([
+    getSalesConfig(user.activeFirmId),
+    prisma.quotationRevision.findMany({
+      where: { quotationId: quotation.id },
+      orderBy: { revision: "desc" },
+      select: { id: true, revision: true, changeNote: true, totalAmount: true, createdAt: true, changedBy: { select: { name: true } } },
+    }),
+    user.permissions.includes("leads.assign")
+      ? prisma.user.findMany({
+          where: { firmId: user.activeFirmId, status: "ACTIVE", role: { in: ["SALES_STAFF", "MANAGER", "ADMIN"] } },
+          select: { id: true, name: true },
+          orderBy: { name: "asc" },
+        })
+      : Promise.resolve([] as { id: string; name: string }[]),
+  ]);
+  const discountPct = Number(quotation.discountPercentEffective);
+  const overLimit = discountNeedsApproval(discountPct, config.maxStaffDiscountPercent);
+  const canReview = user.permissions.includes("quotation.review");
+  const canSubmitReview = user.permissions.includes("quotation.create") || user.permissions.includes("quotation.edit");
+  const shareBlocked =
+    overLimit && quotation.reviewStatus !== "APPROVED"
+      ? `Discount ${discountPct}% exceeds the ${config.maxStaffDiscountPercent}% limit — manager approval required before sending`
+      : ["REJECTED", "EXPIRED"].includes(quotation.status)
+        ? `A ${quotation.status.toLowerCase()} quotation cannot be sent`
+        : null;
   const isGst = quotation.taxMode === "GST";
   const hasLineDiscount = Number(quotation.discountAmount) > 0 || quotation.lines.some((l) => Number(l.discountPercent) > 0);
   const canConvert = quotation.status !== "CONVERTED" && user.permissions.includes("quotation.convert");
@@ -71,15 +103,19 @@ export default async function QuotationDetailPage({
                 <FileDown /> PDF
               </a>
             </Button>
-            <WhatsAppShareButton
-              documentId={quotation.id}
-              documentType="quotation"
-              documentNumber={quotation.quotationNumber}
-              customerPhone={quotation.customer.phone}
-            />
+            {quotation.status !== "CONVERTED" ? (
+              <QuotationShare
+                quotationId={quotation.id}
+                quotationNumber={quotation.quotationNumber}
+                customerPhone={quotation.customer.phone}
+                customerEmail={quotation.customer.email}
+                disabled={Boolean(shareBlocked)}
+              />
+            ) : null}
             {canEdit ? (
               <EditQuotationButton
                 quotation={quotation}
+                salespeople={salespeople}
                 canSwitchMode={canSwitchMode}
                 defaultOpen={sParams.edit === "true"}
               />
@@ -100,6 +136,12 @@ export default async function QuotationDetailPage({
         }
       />
 
+      {shareBlocked && quotation.status !== "CONVERTED" ? (
+        <div className="rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm" role="status">
+          {shareBlocked}
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge status={quotation.status} label={QUOTATION_STATUS_LABELS[quotation.status] ?? quotation.status} dot />
         <StatusBadge
@@ -107,6 +149,14 @@ export default async function QuotationDetailPage({
           label={quotation.taxMode === "GST" ? "GST mode" : "Non-Tax"}
           tone={quotation.taxMode === "GST" ? "info" : "neutral"}
         />
+        {quotation.reviewStatus !== "NONE" ? (
+          <StatusBadge
+            status={quotation.reviewStatus}
+            label={REVIEW_STATUS_LABELS[quotation.reviewStatus]}
+            tone={quotation.reviewStatus === "APPROVED" ? "success" : quotation.reviewStatus === "PENDING" ? "warning" : "danger"}
+          />
+        ) : null}
+        <span className="text-sm text-muted-foreground">Revision {quotation.revision}</span>
         {quotation.validUntil ? (
           <span className="text-sm text-muted-foreground">Valid until: {formatDate(quotation.validUntil)}</span>
         ) : null}
@@ -282,7 +332,92 @@ export default async function QuotationDetailPage({
             <CardHeader className="pb-2"><CardTitle className="text-base">Details</CardTitle></CardHeader>
             <CardContent className="space-y-1 text-sm text-muted-foreground">
               <p>Branch: {quotation.branch.name}</p>
-              <p>Created by: {quotation.createdBy?.name || "—"}</p>
+              <p>Created by: {quotation.createdBy?.name || "—"} · {formatDate(quotation.createdAt)}</p>
+              <p>Salesperson: {quotation.assignedTo?.name || "—"}</p>
+              <p>Last modified: {formatDate(quotation.updatedAt)}</p>
+              {discountPct > 0 ? <p>Effective discount: {discountPct}%</p> : null}
+              {quotation.sharedAt ? <p>Sent {formatDate(quotation.sharedAt)} via {quotation.sharedVia}</p> : null}
+              {quotation.lead ? (
+                <p>
+                  Lead:{" "}
+                  <Link href={`/leads/${quotation.lead.id}`} className="text-primary hover:underline">
+                    {quotation.lead.leadNumber} · {quotation.lead.name}
+                  </Link>
+                  {quotation.lead.campaign ? (
+                    <>
+                      {" "}· <Link href={`/marketing/campaigns/${quotation.lead.campaign.id}`} className="text-primary hover:underline">{quotation.lead.campaign.name}</Link>
+                    </>
+                  ) : (
+                    <> · {quotation.lead.source}</>
+                  )}
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          {quotation.convertedInvoices.length > 0 ? (
+            <Card>
+              <CardHeader className="pb-2"><CardTitle className="text-base">Invoice</CardTitle></CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                {quotation.convertedInvoices.map((invoice) => (
+                  <div key={invoice.id} className="flex items-center justify-between gap-2">
+                    <Link href={`/invoices/${invoice.id}`} className="font-medium text-primary hover:underline">
+                      {invoice.invoiceNumber}
+                    </Link>
+                    <span className="numeric text-muted-foreground">
+                      {formatCurrency(invoice.totalAmount)} · due {formatCurrency(invoice.amountDue)}
+                    </span>
+                  </div>
+                ))}
+                <p className="text-xs text-muted-foreground">
+                  Converted {quotation.convertedAt ? formatDate(quotation.convertedAt) : ""}
+                  {quotation.convertedBy ? ` by ${quotation.convertedBy.name}` : ""}
+                </p>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {quotation.status !== "CONVERTED" && (canReview || canSubmitReview) ? (
+            <Card>
+              <CardHeader className="pb-2"><CardTitle className="text-base">Manager review</CardTitle></CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <p className="text-muted-foreground">
+                  {REVIEW_STATUS_LABELS[quotation.reviewStatus]}
+                  {quotation.reviewedBy ? ` · ${quotation.reviewedBy.name}` : ""}
+                  {quotation.reviewedAt ? ` · ${formatDate(quotation.reviewedAt)}` : ""}
+                </p>
+                {quotation.reviewNotes ? (
+                  <p className="rounded-md bg-muted px-2.5 py-2">{quotation.reviewNotes}</p>
+                ) : null}
+                {overLimit && quotation.reviewStatus !== "APPROVED" ? (
+                  <p className="text-xs text-warning-foreground">
+                    Discount {discountPct}% is above the {config.maxStaffDiscountPercent}% limit and needs approval.
+                  </p>
+                ) : null}
+                <QuotationReviewActions
+                  quotationId={quotation.id}
+                  reviewStatus={quotation.reviewStatus}
+                  canSubmit={canSubmitReview}
+                  canReview={canReview}
+                />
+              </CardContent>
+            </Card>
+          ) : null}
+
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-base">Revisions</CardTitle></CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              {revisions.map((revision) => (
+                <div key={revision.id} className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-medium">r{revision.revision}{revision.revision === quotation.revision ? " (current)" : ""}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {revision.changeNote || "Edited"} · {revision.changedBy?.name ?? "—"} · {formatDate(revision.createdAt)}
+                    </p>
+                  </div>
+                  <span className="numeric shrink-0 text-muted-foreground">{formatCurrency(revision.totalAmount)}</span>
+                </div>
+              ))}
             </CardContent>
           </Card>
 

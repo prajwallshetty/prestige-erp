@@ -185,6 +185,18 @@ export const STATUS_TONES: Record<string, "default" | "success" | "warning" | "d
   PARTIAL: "warning",
   PENDING: "warning",
   OVERDUE: "danger",
+  // lead pipeline
+  NEW: "info",
+  CONTACTED: "info",
+  QUALIFIED: "info",
+  QUOTATION_SENT: "warning",
+  NEGOTIATION: "warning",
+  WON: "success",
+  LOST: "danger",
+  // campaigns
+  PAUSED: "warning",
+  // quotation review
+  NONE: "default",
 };
 
 const BADGE_TONES: BadgeTone[] = ["neutral", "info", "progress", "success", "warning", "danger"];

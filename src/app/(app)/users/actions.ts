@@ -15,6 +15,7 @@ const ASSIGNABLE_ROLES: UserRole[] = [
   "SALES_STAFF",
   "PURCHASE_STAFF",
   "INVENTORY_MANAGER",
+  "MARKETING",
   "VIEWER",
 ];
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentUser, hasPermission, taxModeWhere } from "@/lib/session";
+import { quotationScopeWhere } from "@/lib/sales-scope";
 import { PERMISSIONS } from "@/lib/rbac";
 import { errorStatus, NotFoundError } from "@/lib/action-result";
 import {
@@ -51,7 +52,8 @@ export async function GET(
           return NextResponse.json({ error: "Forbidden" }, { status: 403 });
         }
         const quotation = await prisma.quotation.findFirst({
-          where: { id, firmId: user.activeFirmId, ...taxModeWhere(user) },
+          // Ownership applies to the PDF too: salespeople only get their own quotations.
+          where: { id, ...quotationScopeWhere(user) },
           select: { id: true },
         });
         if (!quotation) throw new NotFoundError("Quotation not found");

@@ -17,6 +17,7 @@ import { RevenueChart } from "@/components/charts/revenue-chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { dashboardMetrics } from "@/lib/services/dashboard";
+import { SalesPanel } from "./sales-panel";
 import { requirePermissionInFirm } from "@/lib/session";
 import { isPlatformRole } from "@/lib/rbac";
 import { formatCompactCurrency, formatCurrency } from "@/lib/money";
@@ -59,6 +60,8 @@ export default async function DashboardPage() {
           ) : null
         }
       />
+
+      {user.permissions.includes("leads.view") || user.permissions.includes("leads.view_all") ? <SalesPanel user={user} /> : null}
 
       {/* Role-aware stat cards */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

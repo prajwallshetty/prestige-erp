@@ -31,6 +31,11 @@ interface SearchableSelectProps {
   onCreate?: (query: string) => void;
   /** Label for that row, e.g. "Add customer". Defaults to "Add new". */
   createLabel?: string;
+  /**
+   * Server-side search: called (debounced) as the user types. When provided the
+   * list is no longer filtered locally — the caller supplies matching options.
+   */
+  onQueryChange?: (query: string) => void;
 }
 
 /**
@@ -49,6 +54,7 @@ export function SearchableSelect({
   ariaLabel,
   onCreate,
   createLabel = "Add new",
+  onQueryChange,
 }: SearchableSelectProps) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -60,13 +66,21 @@ export function SearchableSelect({
 
   const filtered = React.useMemo(() => {
     const cleaned = query.trim().toLowerCase();
-    if (!cleaned) return options;
+    if (!cleaned || onQueryChange) return options;
     return options.filter(
       (option) =>
         option.label.toLowerCase().includes(cleaned) ||
         (option.hint ?? "").toLowerCase().includes(cleaned),
     );
-  }, [options, query]);
+  }, [options, query, onQueryChange]);
+
+  // Debounced hand-off to the caller for server-side search.
+  React.useEffect(() => {
+    if (!open || !onQueryChange) return;
+    const timer = setTimeout(() => onQueryChange(query.trim()), 250);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, open]);
 
   // Close on outside click / Escape, reset query when reopening.
   React.useEffect(() => {

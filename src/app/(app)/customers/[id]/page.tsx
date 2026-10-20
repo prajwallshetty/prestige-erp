@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/table";
 import { prisma } from "@/lib/prisma";
 import { requirePermissionInFirm, taxModeWhere } from "@/lib/session";
+import { leadScopeWhere } from "@/lib/sales-scope";
+import { LEAD_STAGE_LABELS } from "@/lib/sales-config";
 import { formatCurrency } from "@/lib/money";
 import { formatDate } from "@/lib/dates";
 import { INVOICE_STATUS_LABELS } from "@/lib/workflow";
@@ -55,6 +57,17 @@ export default async function CustomerDetailPage({
   if (!customer) notFound();
 
   const outstanding = customer.invoices.reduce((sum, inv) => sum + Number(inv.amountDue), 0);
+
+  // Leads that became (or belong to) this customer — only those the viewer may open.
+  const leads =
+    user.permissions.includes("leads.view") || user.permissions.includes("leads.view_all")
+      ? await prisma.lead.findMany({
+          where: { AND: [leadScopeWhere(user), { customerId: customer.id }] },
+          orderBy: { createdAt: "desc" },
+          take: 10,
+          select: { id: true, leadNumber: true, stage: true, source: true, createdAt: true },
+        })
+      : [];
 
   return (
     <div className="space-y-4">
@@ -137,6 +150,20 @@ export default async function CustomerDetailPage({
             )}
           </CardContent>
         </Card>
+
+        {leads.length > 0 ? (
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-base">Leads</CardTitle></CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              {leads.map((lead) => (
+                <div key={lead.id} className="flex items-center justify-between gap-2">
+                  <Link href={`/leads/${lead.id}`} className="font-medium text-primary hover:underline">{lead.leadNumber}</Link>
+                  <span className="text-muted-foreground">{lead.source} · {LEAD_STAGE_LABELS[lead.stage]} · {formatDate(lead.createdAt)}</span>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-base">Contact</CardTitle></CardHeader>

@@ -27,6 +27,8 @@ enum UserRole {
   PURCHASE_STAFF
   INVENTORY_MANAGER
   VIEWER
+  /// Runs campaigns and analyses lead sources; no access to invoices or payments.
+  MARKETING
 }
 
 enum FirmStatus {
@@ -127,6 +129,53 @@ enum StockTransferStatus {
   IN_TRANSIT
   RECEIVED
   CANCELLED
+}
+
+/// Sales pipeline stages. Original lead source/campaign never changes as a
+/// lead moves through these.
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUALIFIED
+  QUOTATION_SENT
+  NEGOTIATION
+  WON
+  LOST
+}
+
+enum LeadActivityType {
+  CREATED
+  CALL
+  MEETING
+  VISIT
+  WHATSAPP
+  EMAIL
+  NOTE
+  STAGE_CHANGE
+  ASSIGNMENT
+  QUOTATION
+  ATTRIBUTION
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum PromotionDiscountType {
+  PERCENT
+  FLAT
+}
+
+/// Manager review state of a quotation (independent of its customer-facing status).
+enum QuotationReviewStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum QuotationStatus {
@@ -273,6 +322,16 @@ enum AuditAction {
   INVOICE_IMPORT_APPROVED
   INVOICE_IMPORT_REJECTED
   INVOICE_IMPORT_POSTED
+  LEAD_CREATED
+  LEAD_UPDATED
+  LEAD_ASSIGNED
+  LEAD_STAGE_CHANGED
+  LEAD_ATTRIBUTION_CHANGED
+  CAMPAIGN_CREATED
+  CAMPAIGN_UPDATED
+  QUOTATION_UPDATED
+  QUOTATION_REVIEWED
+  QUOTATION_SHARED
 }
 
 enum WhatsAppMessageType {
@@ -322,39 +381,41 @@ model Firm {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  branches          Branch[]
-  users             User[]
-  accessCodes       AccessCode[]
-  auditLogs         AuditLog[]
-  settings          Setting[]
-  documentSequences DocumentSequence[]
-  categories        Category[]
-  brands            Brand[]
-  products          Product[]
-  serialUnits       SerialUnit[]
-  stockTransactions StockTransaction[]
-  stockAdjustments  StockAdjustment[]
-  stockTransfers    StockTransfer[]
-  customers         Customer[]
-  suppliers         Supplier[]
-  quotations        Quotation[]
-  salesOrders       SalesOrder[]
-  invoices          Invoice[]
-  salesReturns      SalesReturn[]
-  payments          Payment[]
-  purchaseOrders    PurchaseOrder[]
-  goodsReceipts     GoodsReceipt[]
-  purchaseInvoices  PurchaseInvoice[]
-  supplierPayments  SupplierPayment[]
-  purchaseReturns   PurchaseReturn[]
-  expenses          Expense[]
-  warranties        Warranty[]
-  whatsappLogs      WhatsAppLog[]
-  whatsappTemplates WhatsAppTemplate[]
-  journalEntries    JournalEntry[]
+  branches               Branch[]
+  users                  User[]
+  accessCodes            AccessCode[]
+  auditLogs              AuditLog[]
+  settings               Setting[]
+  documentSequences      DocumentSequence[]
+  categories             Category[]
+  brands                 Brand[]
+  products               Product[]
+  serialUnits            SerialUnit[]
+  stockTransactions      StockTransaction[]
+  stockAdjustments       StockAdjustment[]
+  stockTransfers         StockTransfer[]
+  customers              Customer[]
+  suppliers              Supplier[]
+  quotations             Quotation[]
+  salesOrders            SalesOrder[]
+  invoices               Invoice[]
+  salesReturns           SalesReturn[]
+  payments               Payment[]
+  purchaseOrders         PurchaseOrder[]
+  goodsReceipts          GoodsReceipt[]
+  purchaseInvoices       PurchaseInvoice[]
+  supplierPayments       SupplierPayment[]
+  purchaseReturns        PurchaseReturn[]
+  expenses               Expense[]
+  warranties             Warranty[]
+  whatsappLogs           WhatsAppLog[]
+  whatsappTemplates      WhatsAppTemplate[]
+  journalEntries         JournalEntry[]
   invoiceImportBatches   InvoiceImportBatch[]
   invoiceImportDocuments InvoiceImportDocument[]
   invoiceImportAliases   InvoiceImportProductAlias[]
+  leads                  Lead[]
+  campaigns              Campaign[]
 
   @@index([status])
   @@map("firms")
@@ -390,6 +451,7 @@ model Branch {
   warranties        Warranty[]
   customers         Customer[]
   quotations        Quotation[]
+  leads             Lead[]
   salesOrders       SalesOrder[]
   invoices          Invoice[]
   salesReturns      SalesReturn[]
@@ -437,25 +499,36 @@ model User {
   permissions             UserPermission[]
   accounts                Account[]
   sessions                Session[]
-  invoicesIssued          Invoice[]          @relation("InvoiceIssuedBy")
-  quotationsCreated       Quotation[]        @relation("QuotationCreatedBy")
-  salesOrdersCreated      SalesOrder[]       @relation("SalesOrderCreatedBy")
-  paymentsReceived        Payment[]          @relation("PaymentReceivedBy")
+  invoicesIssued          Invoice[]           @relation("InvoiceIssuedBy")
+  quotationsCreated       Quotation[]         @relation("QuotationCreatedBy")
+  salesOrdersCreated      SalesOrder[]        @relation("SalesOrderCreatedBy")
+  paymentsReceived        Payment[]           @relation("PaymentReceivedBy")
   adjustmentsMade         StockAdjustment[]
   stockTxns               StockTransaction[]
-  transfersCreated        StockTransfer[]    @relation("TransferCreatedBy")
-  expensesCreated         Expense[]          @relation("ExpenseCreatedBy")
+  transfersCreated        StockTransfer[]     @relation("TransferCreatedBy")
+  expensesCreated         Expense[]           @relation("ExpenseCreatedBy")
   auditLogs               AuditLog[]
-  accessCodesCreated      AccessCode[]       @relation("AccessCodeCreatedBy")
-  salesReturnsCreated     SalesReturn[]      @relation("ReturnCreatedBy")
-  salesReturnsApproved    SalesReturn[]      @relation("ReturnApprovedBy")
-  purchaseOrdersCreated   PurchaseOrder[]    @relation("PurchaseOrderCreatedBy")
-  goodsReceiptsReceived   GoodsReceipt[]     @relation("GoodsReceivedBy")
-  purchaseInvoicesCreated PurchaseInvoice[]  @relation("PurchaseInvoiceCreatedBy")
-  supplierPaymentsPaid    SupplierPayment[]  @relation("SupplierPaymentPaidBy")
-  purchaseReturnsCreated  PurchaseReturn[]   @relation("PurchaseReturnCreatedBy")
-  whatsappLogsSent        WhatsAppLog[]      @relation("WhatsAppSentBy")
-  expensesApproved        Expense[]          @relation("ExpenseApprovedBy")
+  accessCodesCreated      AccessCode[]        @relation("AccessCodeCreatedBy")
+  salesReturnsCreated     SalesReturn[]       @relation("ReturnCreatedBy")
+  salesReturnsApproved    SalesReturn[]       @relation("ReturnApprovedBy")
+  purchaseOrdersCreated   PurchaseOrder[]     @relation("PurchaseOrderCreatedBy")
+  goodsReceiptsReceived   GoodsReceipt[]      @relation("GoodsReceivedBy")
+  purchaseInvoicesCreated PurchaseInvoice[]   @relation("PurchaseInvoiceCreatedBy")
+  supplierPaymentsPaid    SupplierPayment[]   @relation("SupplierPaymentPaidBy")
+  purchaseReturnsCreated  PurchaseReturn[]    @relation("PurchaseReturnCreatedBy")
+  whatsappLogsSent        WhatsAppLog[]       @relation("WhatsAppSentBy")
+  expensesApproved        Expense[]           @relation("ExpenseApprovedBy")
+  leadsAssigned           Lead[]              @relation("LeadAssignedTo")
+  leadsCreated            Lead[]              @relation("LeadCreatedBy")
+  leadActivities          LeadActivity[]
+  leadFollowUps           LeadFollowUp[]      @relation("FollowUpAssignee")
+  leadFollowUpsCompleted  LeadFollowUp[]      @relation("FollowUpCompletedBy")
+  campaignsOwned          Campaign[]          @relation("CampaignOwner")
+  campaignsCreated        Campaign[]          @relation("CampaignCreatedBy")
+  quotationsAssigned      Quotation[]         @relation("QuotationAssignedTo")
+  quotationsReviewed      Quotation[]         @relation("QuotationReviewedBy")
+  quotationsConverted     Quotation[]         @relation("QuotationConvertedBy")
+  quotationRevisions      QuotationRevision[]
 
   @@index([branchId])
   @@index([role])
@@ -1012,6 +1085,7 @@ model Customer {
   warranties     Warranty[]
   whatsappLogs   WhatsAppLog[]
   journalEntries JournalEntry[]
+  leads          Lead[]
 
   @@unique([firmId, code])
   @@index([branchId, name])
@@ -1082,15 +1156,15 @@ model Quotation {
   quotationDate DateTime
   validUntil    DateTime?
 
-  subtotal       Decimal @default(0) @db.Decimal(12, 2)
-  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  subtotal        Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount  Decimal @default(0) @db.Decimal(12, 2)
   discountRemarks String?
-  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
-  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  roundOff       Decimal @default(0) @db.Decimal(12, 2)
-  totalAmount    Decimal @default(0) @db.Decimal(12, 2)
+  taxableAmount   Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  roundOff        Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal @default(0) @db.Decimal(12, 2)
 
   notes String?
   terms String?
@@ -1100,16 +1174,45 @@ model Quotation {
   convertedInvoices    Invoice[]    @relation("QuotationConverted")
   convertedSalesOrders SalesOrder[]
   convertedAt          DateTime?
+  convertedById        String?
+  convertedBy          User?        @relation("QuotationConvertedBy", fields: [convertedById], references: [id], onDelete: SetNull)
+
+  /// Lead this quotation was raised for (null for walk-in / pre-existing quotations).
+  leadId       String?
+  lead         Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  /// The salesperson who owns the opportunity; defaults to the creator.
+  assignedToId String?
+  assignedTo   User?   @relation("QuotationAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  /// Bumped on every saved change; each value has a QuotationRevision snapshot.
+  revision  Int       @default(1)
+  sharedAt  DateTime?
+  sharedVia String?
+
+  // Manager review.
+  reviewStatus             QuotationReviewStatus @default(NONE)
+  reviewedById             String?
+  reviewedBy               User?                 @relation("QuotationReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt               DateTime?
+  reviewNotes              String?
+  /// Snapshot of the discount level at last save, so approval limits can be
+  /// evaluated and reported without re-deriving it from lines.
+  discountPercentEffective Decimal               @default(0) @db.Decimal(6, 2)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  lines QuotationLine[]
+  lines     QuotationLine[]
+  revisions QuotationRevision[]
+  followUps LeadFollowUp[]
 
   @@index([branchId, status])
   @@index([customerId])
   @@index([firmId, status])
   @@index([quotationDate])
+  @@index([leadId])
+  @@index([assignedToId])
+  @@index([firmId, reviewStatus])
   @@map("quotations")
 }
 
@@ -1134,6 +1237,177 @@ model QuotationLine {
   @@map("quotation_lines")
 }
 
+// ============================================================================
+// LEADS, CAMPAIGNS & MARKETING ATTRIBUTION
+// ============================================================================
+
+/// A sales enquiry before (or alongside) it becomes a Customer. `source` and
+/// `campaignId` are the ORIGINAL attribution and are never rewritten by the
+/// pipeline; corrections go through an audited attribution change.
+model Lead {
+  firmId     String
+  firm       Firm   @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id         String @id @default(cuid())
+  leadNumber String
+  branchId   String
+  branch     Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  name             String
+  phone            String
+  /// Last 10 digits of the phone number — used for duplicate detection.
+  phoneKey         String
+  email            String?
+  location         String?
+  requirements     String?
+  productInterests String[]
+  estimatedBudget  Decimal? @db.Decimal(12, 2)
+  remarks          String?
+
+  /// Configurable source code (see Settings → lead_sources).
+  source       String
+  sourceDetail String?
+  campaignId   String?
+  campaign     Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  stage      LeadStage @default(NEW)
+  lostReason String?
+  lostAt     DateTime?
+  wonAt      DateTime?
+
+  assignedToId String?
+  assignedTo   User?   @relation("LeadAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdById  String?
+  createdBy    User?   @relation("LeadCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  /// Earliest open follow-up, denormalised for list filtering.
+  nextFollowUpAt DateTime?
+  lastActivityAt DateTime  @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  activities LeadActivity[]
+  followUps  LeadFollowUp[]
+  quotations Quotation[]
+
+  @@unique([firmId, leadNumber])
+  @@index([firmId, stage])
+  @@index([firmId, assignedToId])
+  @@index([firmId, phoneKey])
+  @@index([campaignId])
+  @@index([firmId, createdAt])
+  @@index([firmId, nextFollowUpAt])
+  @@map("leads")
+}
+
+model LeadActivity {
+  id          String           @id @default(cuid())
+  firmId      String
+  leadId      String
+  lead        Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type        LeadActivityType
+  notes       String?
+  outcome     String?
+  /// For STAGE_CHANGE rows — drives funnel conversion reporting.
+  fromStage   LeadStage?
+  toStage     LeadStage?
+  occurredAt  DateTime         @default(now())
+  createdById String?
+  createdBy   User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime         @default(now())
+
+  @@index([leadId, occurredAt])
+  @@index([firmId, type])
+  @@map("lead_activities")
+}
+
+model LeadFollowUp {
+  id              String     @id @default(cuid())
+  firmId          String
+  leadId          String
+  lead            Lead       @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  quotationId     String?
+  quotation       Quotation? @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  dueAt           DateTime
+  notes           String?
+  assignedToId    String?
+  assignedTo      User?      @relation("FollowUpAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  completedAt     DateTime?
+  completedById   String?
+  completedBy     User?      @relation("FollowUpCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
+  completionNotes String?
+  createdAt       DateTime   @default(now())
+
+  @@index([leadId])
+  @@index([firmId, completedAt, dueAt])
+  @@index([assignedToId, completedAt])
+  @@map("lead_follow_ups")
+}
+
+/// Marketing campaign / promotion. `budget` and `actualSpend` are nullable on
+/// purpose: NULL means "not recorded", which reports must not treat as zero.
+model Campaign {
+  firmId         String
+  firm           Firm           @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  id             String         @id @default(cuid())
+  name           String
+  description    String?
+  type           String
+  /// Configurable channel (Google Ads, Instagram, Referral, Showroom...).
+  channel        String
+  status         CampaignStatus @default(DRAFT)
+  startDate      DateTime?
+  endDate        DateTime?
+  targetAudience String?
+  targetLocation String?
+  budget         Decimal?       @db.Decimal(12, 2)
+  actualSpend    Decimal?       @db.Decimal(12, 2)
+  notes          String?
+
+  // Promotion / offer rules (optional).
+  isPromotion    Boolean                @default(false)
+  offerValidFrom DateTime?
+  offerValidTo   DateTime?
+  discountType   PromotionDiscountType?
+  discountValue  Decimal?               @db.Decimal(12, 2)
+  minOrderValue  Decimal?               @db.Decimal(12, 2)
+  promoCode      String?
+
+  ownerId     String?
+  owner       User?    @relation("CampaignOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  createdById String?
+  createdBy   User?    @relation("CampaignCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  leads    Lead[]
+
+  @@unique([firmId, name])
+  @@index([firmId, status])
+  @@index([firmId, channel])
+  @@map("campaigns")
+}
+
+/// Immutable snapshot of a quotation after each saved change.
+model QuotationRevision {
+  id          String    @id @default(cuid())
+  quotationId String
+  quotation   Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  revision    Int
+  changeNote  String?
+  snapshot    Json
+  totalAmount Decimal   @db.Decimal(12, 2)
+  changedById String?
+  changedBy   User?     @relation(fields: [changedById], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  @@unique([quotationId, revision])
+  @@map("quotation_revisions")
+}
+
 model SalesOrder {
   firmId      String
   firm        Firm             @relation(fields: [firmId], references: [id], onDelete: Restrict)
@@ -1152,14 +1426,14 @@ model SalesOrder {
   expectedDate DateTime?
   notes        String?
 
-  subtotal       Decimal @default(0) @db.Decimal(12, 2)
-  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  subtotal        Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount  Decimal @default(0) @db.Decimal(12, 2)
   discountRemarks String?
-  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
-  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  totalAmount    Decimal @default(0) @db.Decimal(12, 2)
+  taxableAmount   Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal @default(0) @db.Decimal(12, 2)
 
   createdById String?
   createdBy   User?     @relation("SalesOrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
@@ -1234,17 +1508,17 @@ model Invoice {
   invoiceDate DateTime  @default(now())
   dueDate     DateTime?
 
-  subtotal       Decimal @default(0) @db.Decimal(12, 2)
-  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  subtotal        Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount  Decimal @default(0) @db.Decimal(12, 2)
   discountRemarks String?
-  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
-  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
-  roundOff       Decimal @default(0) @db.Decimal(12, 2)
-  totalAmount    Decimal @default(0) @db.Decimal(12, 2)
-  amountPaid     Decimal @default(0) @db.Decimal(12, 2)
-  amountDue      Decimal @default(0) @db.Decimal(12, 2)
+  taxableAmount   Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount      Decimal @default(0) @db.Decimal(12, 2)
+  roundOff        Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal @default(0) @db.Decimal(12, 2)
+  amountPaid      Decimal @default(0) @db.Decimal(12, 2)
+  amountDue       Decimal @default(0) @db.Decimal(12, 2)
 
   /// Dispatch / e-way details printed on the invoice PDF.
   dispatchThrough String?
@@ -1909,15 +2183,15 @@ model InvoiceImportDocument {
   processedAt DateTime?
 
   /// Text in reading order, verbatim.
-  rawText    String? @db.Text
+  rawText          String? @db.Text
   /// The original extraction. Written once per processing run, never edited.
-  extraction Json?
+  extraction       Json?
   /// The reviewed values (DraftInvoice). Edited on the review screen.
-  draft      Json?
+  draft            Json?
   /// Latest validation + product-matching result for `draft`.
-  evaluation Json?
+  evaluation       Json?
   /// Reviewer-confirmed products: { [lineNo]: productId }.
-  assignments Json?
+  assignments      Json?
   /// Discrepancies a reviewer accepted, with reasons: [{code, field, reason, userId, at}].
   acknowledgements Json?
 

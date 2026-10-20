@@ -42,7 +42,17 @@ export type AuditActionName =
   | "INVOICE_IMPORT_EDITED"
   | "INVOICE_IMPORT_APPROVED"
   | "INVOICE_IMPORT_REJECTED"
-  | "INVOICE_IMPORT_POSTED";
+  | "INVOICE_IMPORT_POSTED"
+  | "LEAD_CREATED"
+  | "LEAD_UPDATED"
+  | "LEAD_ASSIGNED"
+  | "LEAD_STAGE_CHANGED"
+  | "LEAD_ATTRIBUTION_CHANGED"
+  | "CAMPAIGN_CREATED"
+  | "CAMPAIGN_UPDATED"
+  | "QUOTATION_UPDATED"
+  | "QUOTATION_REVIEWED"
+  | "QUOTATION_SHARED";
 
 const AUDIT_ACTIONS: AuditActionName[] = [
   "LOGIN", "LOGIN_FAILED", "LOGOUT", "ACCESS_CODE_USED", "ACCESS_CODE_FAILED",
@@ -54,6 +64,7 @@ const AUDIT_ACTIONS: AuditActionName[] = [
   "USER_UPDATED", "USER_PERMISSION_CHANGED", "FIRM_UPDATED", "WARRANTY_CLAIMED",
   "EXPENSE_CREATED", "SETTING_UPDATED", "INVOICE_IMPORT_UPLOADED", "INVOICE_IMPORT_PROCESSED",
   "INVOICE_IMPORT_EDITED", "INVOICE_IMPORT_APPROVED", "INVOICE_IMPORT_REJECTED", "INVOICE_IMPORT_POSTED",
+  "LEAD_CREATED", "LEAD_UPDATED", "LEAD_ASSIGNED", "LEAD_STAGE_CHANGED", "LEAD_ATTRIBUTION_CHANGED", "CAMPAIGN_CREATED", "CAMPAIGN_UPDATED", "QUOTATION_UPDATED", "QUOTATION_REVIEWED", "QUOTATION_SHARED",
 ];
 
 /** Human-readable label for the activity log. */
@@ -97,6 +108,16 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   INVOICE_IMPORT_APPROVED: "Imported invoice approved",
   INVOICE_IMPORT_REJECTED: "Imported invoice rejected",
   INVOICE_IMPORT_POSTED: "Draft created from imported invoice",
+  LEAD_CREATED: "Lead created",
+  LEAD_UPDATED: "Lead updated",
+  LEAD_ASSIGNED: "Lead assigned",
+  LEAD_STAGE_CHANGED: "Lead stage changed",
+  LEAD_ATTRIBUTION_CHANGED: "Lead attribution corrected",
+  CAMPAIGN_CREATED: "Campaign created",
+  CAMPAIGN_UPDATED: "Campaign updated",
+  QUOTATION_UPDATED: "Quotation updated",
+  QUOTATION_REVIEWED: "Quotation reviewed",
+  QUOTATION_SHARED: "Quotation shared",
 };
 
 /** The mode label appended to summaries so the audit trail shows the context. */
