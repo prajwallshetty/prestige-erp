@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname),
   },
-  serverExternalPackages: ["@prisma/client", "pg", "bcryptjs"],
+  serverExternalPackages: ["@prisma/client", "pg", "bcryptjs", "@electric-sql/pglite", "@prisma/adapter-pg"],
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "**.amazonaws.com" },

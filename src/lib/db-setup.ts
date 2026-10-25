@@ -1,6 +1,42 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import pg from "pg";
+
+// Polyfill Node fs to handle Turbopack-sandboxed URL instances
+function toNativePath(p: any) {
+  if (p && typeof p === "object" && ("href" in p || p.constructor?.name === "URL") && (p.protocol === "file:" || String(p.href || p).startsWith("file:"))) {
+    try {
+      return fileURLToPath(p.href || p.toString());
+    } catch {
+      return p;
+    }
+  }
+  return p;
+}
+
+const fsMethodsToWrap = [
+  "readFileSync", "readFile",
+  "openSync", "open",
+  "statSync", "stat",
+  "lstatSync", "lstat",
+  "existsSync",
+  "mkdirSync", "mkdir",
+  "writeFileSync", "writeFile",
+  "readdirSync", "readdir"
+] as const;
+
+for (const method of fsMethodsToWrap) {
+  const original = (fs as any)[method];
+  if (typeof original === "function" && !(original as any).__turbopack_patched) {
+    const wrapped = function (this: any, p: any, ...args: any[]) {
+      return original.call(this, toNativePath(p), ...args);
+    };
+    (wrapped as any).__turbopack_patched = true;
+    (fs as any)[method] = wrapped;
+  }
+}
+
 import { PGlite } from "@electric-sql/pglite";
 
 const PG_JSON = 114;
@@ -138,8 +174,8 @@ export function getPGlitePool(): PGlitePool {
             }
           }
         }
-      } catch (err) {
-        console.error("[DB Setup] Migration error:", err);
+      } catch (err: any) {
+        console.error("[DB Setup] Migration error:", err?.message, err?.stack);
       }
     })();
   }
