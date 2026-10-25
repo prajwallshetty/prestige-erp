@@ -43,7 +43,7 @@ except ImportError:
 KNOWN_BRANDS = [
     "Kajaria", "Somany", "Simpolo", "Nitco", "Qutone", "Johnson", 
     "Orientbell", "RAK Ceramics", "Varmora", "Sunhearrt", "Asian Granito",
-    "AGL", "Cera", "Hindware", "Technic", "Prestige"
+    "AGL", "Cera", "Hindware", "Velzone", "Velzone Granito", "Technic", "Prestige"
 ]
 
 # Surface / Finish keywords
@@ -140,6 +140,10 @@ def extract_embedded_images(
 
             # Filter out tiny icons, decorative separators (< 45 pt)
             if rect_w < 45 or rect_h < 45:
+                continue
+
+            # Filter out top header corner logos (e.g. supplier branding in top corners)
+            if rect.y0 < 120 and rect_w < 180 and rect_h < 100 and (rect.x0 > 700 or rect.x1 < 250):
                 continue
 
             # Filter extreme thin banner / hairline (< 1:12 aspect ratio)
@@ -421,156 +425,126 @@ def parse_page(
         extracted_images = extract_composite_crops(page_preview_path, page_no, job_id, out_dir, page_rect)
 
     page_brand = detect_brand(total_text, doc_brand)
-
-    # 4. Identify product candidates on this page
     products = []
-    
+
+    # 4. Identify whether page is non-product (divider / index / cover)
+    size_on_page = SIZE_REGEX.search(total_text)
+
+    is_non_product = False
+    index_keywords = ["index", "table of contents", "collection overview", "design index"]
+    if any(k in total_text.lower() for k in index_keywords):
+        is_non_product = True
+    elif not size_on_page and len(text_blocks) <= 6 and any(w in total_text.lower() for w in ["collection", "edition", "series", "surface"]):
+        # Section divider page
+        is_non_product = True
+    elif len(total_text) < 30 and not extracted_images:
+        # Blank or cover page
+        is_non_product = True
+
+    if is_non_product and not size_on_page:
+        return {
+            "pageNo": page_no,
+            "width": page_rect.width,
+            "height": page_rect.height,
+            "isScanned": is_scanned,
+            "previewUrl": page_preview_url,
+            "previewPath": page_preview_path,
+            "brand": page_brand,
+            "products": [],
+            "extractedImagesCount": len(extracted_images)
+        }
+
     # Analyze text blocks to find product card blocks
-    # A tile product card usually contains a code (SKU/Model), a name, or specifications
-    # Identify code anchors
     code_anchors = []
     other_blocks = []
     for b in text_blocks:
         bx0, by0, bx1, by1, btext = b[0], b[1], b[2], b[3], b[4].strip()
         if not btext or len(btext) < 2:
             continue
-        if by1 < 75 and ("catalogue" in btext.lower() or "collection" in btext.lower() or "series" in btext.lower()):
+        if by1 < 75 and any(w in btext.lower() for w in ["catalogue", "collection", "series", "brochure"]):
             continue
         if CODE_REGEX.search(btext):
             code_anchors.append(b)
         else:
             other_blocks.append(b)
 
-    card_candidates = []
-    if code_anchors:
-        assigned_others = set()
-        for anc in code_anchors:
-            ax0, ay0, ax1, ay1 = anc[0], anc[1], anc[2], anc[3]
-            cluster = [anc]
-            for idx, ob in enumerate(other_blocks):
-                if idx in assigned_others:
-                    continue
-                ox0, oy0, ox1, oy1 = ob[0], ob[1], ob[2], ob[3]
-                # Within vertical proximity (< 100 pt) and roughly same column (< 160 pt)
-                vert_dist = min(abs(oy0 - ay1), abs(ay0 - oy1), abs(oy0 - ay0))
-                horiz_dist = abs(ox0 - ax0)
-                if vert_dist < 100 and horiz_dist < 160:
-                    cluster.append(ob)
-                    assigned_others.add(idx)
-            cluster.sort(key=lambda item: (item[1], item[0]))
-            merged_text = "\n".join(item[4].strip() for item in cluster)
-            cx0 = min(item[0] for item in cluster)
-            cy0 = min(item[1] for item in cluster)
-            cx1 = max(item[2] for item in cluster)
-            cy1 = max(item[3] for item in cluster)
-            card_candidates.append({
-                "bbox": [cx0, cy0, cx1, cy1],
-                "text": merged_text,
-                "has_code": True,
-            })
-    else:
+    # Check if single-product tile page (e.g. Velzone, high-end landscape catalogues)
+    is_single_product_page = bool(size_on_page) and (len(code_anchors) <= 1)
+
+    if is_single_product_page:
+        specs = extract_tile_specifications(total_text)
+
+        # Extract product model name from blocks
+        exclude_set = {
+            "bookmatch", "glossy", "series", "collection", "surface", "glossy surface",
+            "glazed vitrified tiles", "glazed vitrified", "vitrified", "tiles", "floor tiles",
+            "wall tiles", "size:", "size", "random", "random -1", "random -2", "random -3",
+            "random -4", "random -5", "random -6", "random -7", "random -8"
+        }
+        model_name = None
         for b in text_blocks:
-            bx0, by0, bx1, by1, btext = b[0], b[1], b[2], b[3], b[4].strip()
-            if not btext or len(btext) < 3:
-                continue
-            card_candidates.append({
-                "bbox": [bx0, by0, bx1, by1],
-                "text": btext,
-                "has_code": False,
-            })
-
-    # If no structured text cards found but images exist, create candidate per image
-    if not card_candidates and extracted_images:
-        for idx, img in enumerate(extracted_images):
-            card_candidates.append({
-                "bbox": img["bbox"],
-                "text": f"Product Sample {idx + 1}",
-                "has_code": False,
-            })
-
-    # Process each card into a product record
-    for card_idx, card in enumerate(card_candidates):
-        card_text = card["text"]
-        lines = [l.strip() for l in card_text.splitlines() if l.strip()]
-        first_line = lines[0] if lines else "Tile Product"
-        code_match = CODE_REGEX.search(card_text)
-        sku = code_match.group(1).upper() if code_match else f"PRD-P{page_no}-{card_idx + 1}"
-
-        # Extract Name: find the best non-code, non-spec, non-header line
-        name = None
-        for l in lines:
-            l_clean = l.strip()
-            # Skip if it is the product code
-            if code_match and l_clean.upper() == code_match.group(1).upper():
-                continue
-            # Skip if it's a spec line
-            if any(l_clean.lower().startswith(prefix) for prefix in ["size", "surface", "material", "mrp", "price", "hsn", "gst", "pcs", "coverage"]):
-                continue
-            # Skip catalogue/series headers
-            if any(w in l_clean.lower() for w in ["catalogue", "collection", "brochure", "edition", "architectural"]):
-                continue
-            if len(l_clean) >= 3:
-                name = l_clean
+            for l in b[4].splitlines():
+                cl = l.strip()
+                if not cl or len(cl) < 3 or len(cl) > 50:
+                    continue
+                if cl.lower() in exclude_set:
+                    continue
+                if any(cl.lower().startswith(pfx) for pfx in ["size", "surface", "material", "random", "mrp", "price", "pcs", "coverage"]):
+                    continue
+                if any(s.lower() == cl.lower() for s in KNOWN_SURFACES):
+                    continue
+                if any(m.lower() == cl.lower() for m in KNOWN_MATERIALS):
+                    continue
+                model_name = cl
                 break
-        if not name:
-            name = first_line
-        if len(name) > 60:
-            name = name[:60]
+            if model_name:
+                break
 
-        # Extract specs
-        specs = extract_tile_specifications(card_text)
-        
-        # Fallback to page-level specs if not on card
-        if not specs["size"]:
-            page_specs = extract_tile_specifications(total_text)
-            if page_specs["size"]:
-                specs["size"] = page_specs["size"]
-            if not specs["surface"] and page_specs["surface"]:
-                specs["surface"] = page_specs["surface"]
-            if not specs["material"] and page_specs["material"]:
-                specs["material"] = page_specs["material"]
+        if not model_name:
+            model_name = f"Tile Design P{page_no}"
 
-        # Category determination
+        # Clean SKU: if alphanumeric code found, use that; otherwise use model name in uppercase
+        if code_anchors and CODE_REGEX.search(code_anchors[0][4]):
+            sku = CODE_REGEX.search(code_anchors[0][4]).group(1).upper()
+        else:
+            sku = model_name.upper().strip()
+
+        # Image selection: prioritize tile swatch (on right, aspect ratio ~ 1.4 - 2.6)
+        swatches = [img for img in extracted_images if img["bbox"][0] > page_rect.width * 0.45]
+        swatches.sort(key=lambda img: (
+            1 if (1.3 <= img.get("aspectRatio", 1.0) <= 2.7) else 0,
+            img.get("pixelWidth", 0) * img.get("pixelHeight", 0)
+        ), reverse=True)
+
+        best_img = swatches[0] if swatches else (extracted_images[0] if extracted_images else None)
+        conf = 0.96 if best_img else 0.50
+        alts = [img for img in extracted_images if img != best_img]
+
+        # Category
         category = "Floor Tiles"
-        subcategory = specs.get("material") or "Vitrified Tiles"
-        if "wall" in card_text.lower() or "wall" in total_text.lower():
+        subcategory = specs.get("material") or "Glazed Vitrified"
+        if "wall" in total_text.lower():
             category = "Wall Tiles"
             subcategory = "Ceramic Wall"
-        elif "outdoor" in card_text.lower() or "parking" in card_text.lower():
+        elif "outdoor" in total_text.lower() or "parking" in total_text.lower():
             category = "Outdoor Tiles"
             subcategory = "Heavy Duty"
-        elif "slab" in card_text.lower() or (specs.get("size") and "1600" in specs["size"]):
+        elif "slab" in total_text.lower() or (specs.get("size") and "1600" in specs["size"]):
             category = "Slab Tiles"
             subcategory = "Large Format"
 
-        # Spatial image association
-        best_img, conf, alts = compute_spatial_association(card["bbox"], extracted_images)
-
         warnings = []
-        if not code_match:
-            warnings.append("Product code generated automatically; verify code.")
         if not best_img:
             warnings.append("No matching product image found on page.")
-        elif conf < 0.60:
-            warnings.append(f"Low image matching confidence ({int(conf * 100)}%); verify image.")
         if not specs["size"]:
             warnings.append("Size/dimension not detected in text.")
 
         images_payload = []
         if best_img:
-            images_payload.append({
-                **best_img,
-                "isPrimary": True,
-                "confidence": conf
-            })
+            images_payload.append({**best_img, "isPrimary": True, "confidence": conf})
         for alt in alts:
-            images_payload.append({
-                **alt,
-                "isPrimary": False,
-                "confidence": 0.50
-            })
+            images_payload.append({**alt, "isPrimary": False, "confidence": 0.70})
 
-        # Attributes list for flexible ERP specifications
         attributes = []
         if specs.get("size"):
             attributes.append({"name": "Size", "value": specs["size"]})
@@ -583,10 +557,14 @@ def parse_page(
         if specs.get("coveragePerBox"):
             attributes.append({"name": "Coverage per Box", "value": f"{specs['coveragePerBox']} Sqm"})
 
+        rf_match = re.search(r"\bRandom\s*[-:]?\s*(\d+)\b", total_text, re.IGNORECASE)
+        if rf_match:
+            attributes.append({"name": "Random Faces", "value": f"{rf_match.group(1)} Faces"})
+
         products.append({
             "sourcePage": page_no,
             "productCode": sku,
-            "productName": name,
+            "productName": model_name,
             "brandName": page_brand,
             "categoryName": category,
             "subcategory": subcategory,
@@ -602,14 +580,175 @@ def parse_page(
             "sellingPrice": specs.get("sellingPrice") or 0.0,
             "gstRate": specs.get("gstRate") or 18.0,
             "hsnCode": specs.get("hsnCode") or "6907",
-            "description": f"{name} - {specs.get('size') or ''} {specs.get('surface') or ''}".strip(),
+            "description": f"{model_name} - {specs.get('size') or ''} {specs.get('surface') or ''}".strip(),
             "confidence": conf if best_img else 0.50,
             "reviewWarnings": warnings,
             "attributes": attributes,
-            "rawText": card_text,
+            "rawText": total_text,
             "primaryImageUrl": best_img["url"] if best_img else None,
             "images": images_payload,
         })
+    else:
+        # Multi-product grid page clustering
+        card_candidates = []
+        if code_anchors:
+            assigned_others = set()
+            for anc in code_anchors:
+                ax0, ay0, ax1, ay1 = anc[0], anc[1], anc[2], anc[3]
+                cluster = [anc]
+                for idx, ob in enumerate(other_blocks):
+                    if idx in assigned_others:
+                        continue
+                    ox0, oy0, ox1, oy1 = ob[0], ob[1], ob[2], ob[3]
+                    # Within vertical proximity (< 100 pt) and roughly same column (< 160 pt)
+                    vert_dist = min(abs(oy0 - ay1), abs(ay0 - oy1), abs(oy0 - ay0))
+                    horiz_dist = abs(ox0 - ax0)
+                    if vert_dist < 100 and horiz_dist < 160:
+                        cluster.append(ob)
+                        assigned_others.add(idx)
+                cluster.sort(key=lambda item: (item[1], item[0]))
+                merged_text = "\n".join(item[4].strip() for item in cluster)
+                cx0 = min(item[0] for item in cluster)
+                cy0 = min(item[1] for item in cluster)
+                cx1 = max(item[2] for item in cluster)
+                cy1 = max(item[3] for item in cluster)
+                card_candidates.append({
+                    "bbox": [cx0, cy0, cx1, cy1],
+                    "text": merged_text,
+                    "has_code": True,
+                })
+        else:
+            for b in text_blocks:
+                bx0, by0, bx1, by1, btext = b[0], b[1], b[2], b[3], b[4].strip()
+                if not btext or len(btext) < 3:
+                    continue
+                card_candidates.append({
+                    "bbox": [bx0, by0, bx1, by1],
+                    "text": btext,
+                    "has_code": False,
+                })
+
+        # If no structured text cards found but images exist, create candidate per image
+        if not card_candidates and extracted_images:
+            for idx, img in enumerate(extracted_images):
+                card_candidates.append({
+                    "bbox": img["bbox"],
+                    "text": f"Product Sample {idx + 1}",
+                    "has_code": False,
+                })
+
+        # Process each card into a product record
+        for card_idx, card in enumerate(card_candidates):
+            card_text = card["text"]
+            lines = [l.strip() for l in card_text.splitlines() if l.strip()]
+            first_line = lines[0] if lines else "Tile Product"
+            code_match = CODE_REGEX.search(card_text)
+            sku = code_match.group(1).upper() if code_match else f"PRD-P{page_no}-{card_idx + 1}"
+
+            name = None
+            for l in lines:
+                l_clean = l.strip()
+                if code_match and l_clean.upper() == code_match.group(1).upper():
+                    continue
+                if any(l_clean.lower().startswith(prefix) for prefix in ["size", "surface", "material", "mrp", "price", "hsn", "gst", "pcs", "coverage"]):
+                    continue
+                if any(w in l_clean.lower() for w in ["catalogue", "collection", "brochure", "edition", "architectural"]):
+                    continue
+                if len(l_clean) >= 3:
+                    name = l_clean
+                    break
+            if not name:
+                name = first_line
+            if len(name) > 60:
+                name = name[:60]
+
+            specs = extract_tile_specifications(card_text)
+            if not specs["size"]:
+                page_specs = extract_tile_specifications(total_text)
+                if page_specs["size"]:
+                    specs["size"] = page_specs["size"]
+                if not specs["surface"] and page_specs["surface"]:
+                    specs["surface"] = page_specs["surface"]
+                if not specs["material"] and page_specs["material"]:
+                    specs["material"] = page_specs["material"]
+
+            category = "Floor Tiles"
+            subcategory = specs.get("material") or "Vitrified Tiles"
+            if "wall" in card_text.lower() or "wall" in total_text.lower():
+                category = "Wall Tiles"
+                subcategory = "Ceramic Wall"
+            elif "outdoor" in card_text.lower() or "parking" in card_text.lower():
+                category = "Outdoor Tiles"
+                subcategory = "Heavy Duty"
+            elif "slab" in card_text.lower() or (specs.get("size") and "1600" in specs["size"]):
+                category = "Slab Tiles"
+                subcategory = "Large Format"
+
+            best_img, conf, alts = compute_spatial_association(card["bbox"], extracted_images)
+
+            warnings = []
+            if not code_match:
+                warnings.append("Product code generated automatically; verify code.")
+            if not best_img:
+                warnings.append("No matching product image found on page.")
+            elif conf < 0.60:
+                warnings.append(f"Low image matching confidence ({int(conf * 100)}%); verify image.")
+            if not specs["size"]:
+                warnings.append("Size/dimension not detected in text.")
+
+            images_payload = []
+            if best_img:
+                images_payload.append({
+                    **best_img,
+                    "isPrimary": True,
+                    "confidence": conf
+                })
+            for alt in alts:
+                images_payload.append({
+                    **alt,
+                    "isPrimary": False,
+                    "confidence": 0.50
+                })
+
+            attributes = []
+            if specs.get("size"):
+                attributes.append({"name": "Size", "value": specs["size"]})
+            if specs.get("surface"):
+                attributes.append({"name": "Surface / Finish", "value": specs["surface"]})
+            if specs.get("material"):
+                attributes.append({"name": "Material", "value": specs["material"]})
+            if specs.get("piecesPerBox"):
+                attributes.append({"name": "Pieces per Box", "value": str(specs["piecesPerBox"])})
+            if specs.get("coveragePerBox"):
+                attributes.append({"name": "Coverage per Box", "value": f"{specs['coveragePerBox']} Sqm"})
+
+            products.append({
+                "sourcePage": page_no,
+                "productCode": sku,
+                "productName": name,
+                "brandName": page_brand,
+                "categoryName": category,
+                "subcategory": subcategory,
+                "size": specs.get("size"),
+                "surface": specs.get("surface"),
+                "color": specs.get("color"),
+                "material": specs.get("material"),
+                "unit": specs.get("unit") or "box",
+                "piecesPerBox": specs.get("piecesPerBox"),
+                "coveragePerBox": specs.get("coveragePerBox"),
+                "mrp": specs.get("mrp") or 0.0,
+                "purchasePrice": specs.get("purchasePrice") or 0.0,
+                "sellingPrice": specs.get("sellingPrice") or 0.0,
+                "gstRate": specs.get("gstRate") or 18.0,
+                "hsnCode": specs.get("hsnCode") or "6907",
+                "description": f"{name} - {specs.get('size') or ''} {specs.get('surface') or ''}".strip(),
+                "confidence": conf if best_img else 0.50,
+                "reviewWarnings": warnings,
+                "attributes": attributes,
+                "rawText": card_text,
+                "primaryImageUrl": best_img["url"] if best_img else None,
+                "images": images_payload,
+            })
 
     return {
         "pageNo": page_no,
@@ -651,13 +790,16 @@ def main():
     start_p = max(1, args.start_page)
     end_p = total_pages if args.end_page <= 0 else min(total_pages, args.end_page)
 
-    # Initial quick scan for document brand across first 3 pages
-    doc_brand = None
-    for p_idx in range(min(3, total_pages)):
-        header_text = doc[p_idx].get_text()
-        doc_brand = detect_brand(header_text)
-        if doc_brand:
-            break
+    # Initial quick scan for document brand across filename, metadata, and first 5 pages
+    doc_brand = detect_brand(os.path.basename(pdf_path))
+    if not doc_brand and doc.metadata:
+        doc_brand = detect_brand(str(doc.metadata))
+    if not doc_brand:
+        for p_idx in range(min(5, total_pages)):
+            header_text = doc[p_idx].get_text()
+            doc_brand = detect_brand(header_text)
+            if doc_brand:
+                break
 
     pages_result = []
     all_products = []

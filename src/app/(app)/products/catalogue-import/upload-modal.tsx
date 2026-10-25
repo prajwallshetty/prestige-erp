@@ -62,7 +62,7 @@ export function UploadCatalogueModal() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button>
+        <Button id="upload-catalogue-btn" onClick={() => setOpen(true)}>
           <UploadCloud className="mr-2 h-4 w-4" />
           Upload Catalogue PDF
         </Button>
@@ -174,7 +174,7 @@ export function UploadCatalogueModal() {
             >
               Cancel
             </Button>
-            <Button onClick={handleUpload} disabled={!file || isPending}>
+            <Button id="start-extraction-btn" onClick={handleUpload} disabled={!file || isPending}>
               {isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

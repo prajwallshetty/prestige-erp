@@ -13,6 +13,12 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "**.supabase.co" },
     ],
   },
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "60mb",
+    },
+    proxyClientMaxBodySize: "60mb",
+  },
 };
 
 export default nextConfig;
