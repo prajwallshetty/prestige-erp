@@ -10,28 +10,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { PrismaPg } from "@prisma/adapter-pg";
-
-import { PrismaClient } from "../src/generated/prisma/client";
+import { prisma } from "../src/lib/prisma";
 import type { UserRole } from "../src/generated/prisma/enums";
 import { PERMISSIONS, PERMISSION_DESCRIPTIONS, ROLE_PERMISSIONS } from "../src/lib/rbac";
-
-if (!process.env.DATABASE_URL) {
-  try {
-    const envFile = fs.readFileSync(path.join(process.cwd(), ".env"), "utf-8");
-    for (const line of envFile.split("\n")) {
-      const match = line.match(/^\s*([\w_]+)\s*=\s*"?([^"\n]+)"?/);
-      if (match?.[1] && match[2]) process.env[match[1]] = match[2];
-    }
-  } catch {
-    // .env is optional
-  }
-}
-
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) throw new Error("DATABASE_URL is not set");
-
-const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
 
 const FIRM_ID = "firm_technic_main";
 const FY = "26-27";

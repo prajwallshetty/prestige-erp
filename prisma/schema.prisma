@@ -322,6 +322,12 @@ enum AuditAction {
   INVOICE_IMPORT_APPROVED
   INVOICE_IMPORT_REJECTED
   INVOICE_IMPORT_POSTED
+  CATALOGUE_UPLOADED
+  CATALOGUE_PROCESSED
+  CATALOGUE_REVIEWED
+  CATALOGUE_APPROVED
+  CATALOGUE_IMPORTED
+  CATALOGUE_RETRY
   LEAD_CREATED
   LEAD_UPDATED
   LEAD_ASSIGNED
@@ -414,6 +420,7 @@ model Firm {
   invoiceImportBatches   InvoiceImportBatch[]
   invoiceImportDocuments InvoiceImportDocument[]
   invoiceImportAliases   InvoiceImportProductAlias[]
+  catalogueImportJobs    CatalogueImportJob[]
   leads                  Lead[]
   campaigns              Campaign[]
 
@@ -2264,4 +2271,131 @@ model InvoiceImportProductAlias {
   @@unique([firmId, partyKey, aliasKey])
   @@index([productId])
   @@map("invoice_import_product_aliases")
+}
+
+// ============================================================================
+// CATALOGUE OCR IMPORT MODULE
+// ============================================================================
+
+enum CatalogueImportStatus {
+  UPLOADED
+  PROCESSING
+  REVIEW_REQUIRED
+  APPROVED
+  IMPORTED
+  PARTIALLY_IMPORTED
+  FAILED
+  CANCELLED
+}
+
+enum CatalogueItemStatus {
+  PENDING_REVIEW
+  APPROVED
+  EXCLUDED
+  IMPORTED
+  FAILED
+}
+
+enum DuplicateStatus {
+  NEW_PRODUCT
+  EXACT_MATCH
+  POSSIBLE_DUPLICATE
+  CHANGED_DETAILS
+}
+
+model CatalogueImportJob {
+  id               String                @id @default(cuid())
+  firmId           String
+  firm             Firm                  @relation(fields: [firmId], references: [id], onDelete: Restrict)
+  branchId         String?
+  name             String
+  sourceFilename   String
+  sourcePath       String
+  fileSize         Int
+  mimeType         String
+  sha256           String
+  pageCount        Int?
+  status           CatalogueImportStatus @default(UPLOADED)
+  processedPages   Int                   @default(0)
+  totalProducts    Int                   @default(0)
+  approvedProducts Int                   @default(0)
+  importedProducts Int                   @default(0)
+  lastError        String?
+  metadata         Json?
+
+  createdById      String?
+  reviewedById     String?
+  approvedById     String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  completedAt      DateTime?
+
+  items            CatalogueImportItem[]
+  file             CatalogueImportFile?
+
+  @@index([firmId, createdAt])
+  @@index([firmId, status])
+  @@map("catalogue_import_jobs")
+}
+
+model CatalogueImportFile {
+  jobId String             @id
+  job   CatalogueImportJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  data  Bytes
+
+  @@map("catalogue_import_files")
+}
+
+model CatalogueImportItem {
+  id                 String              @id @default(cuid())
+  jobId              String
+  job                CatalogueImportJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  firmId             String
+  sourcePage         Int
+  status             CatalogueItemStatus @default(PENDING_REVIEW)
+  duplicateStatus    DuplicateStatus     @default(NEW_PRODUCT)
+  duplicateProductId String?
+  duplicateReason    String?
+  confidence         Decimal             @default(1.0) @db.Decimal(4, 3)
+  reviewWarnings     Json?
+
+  // Extracted product fields
+  brandName          String?
+  brandId            String?
+  productName        String
+  productCode        String?
+  categoryName       String?
+  categoryId         String?
+  subcategory        String?
+  size               String?
+  surface            String?
+  color              String?
+  material           String?
+  unit               String              @default("box")
+  piecesPerBox       Int?
+  coveragePerBox     Decimal?            @db.Decimal(8, 2)
+  mrp                Decimal?            @db.Decimal(12, 2)
+  purchasePrice      Decimal?            @db.Decimal(12, 2)
+  sellingPrice       Decimal?            @db.Decimal(12, 2)
+  gstRate            Decimal             @default(18) @db.Decimal(5, 2)
+  hsnCode            String?             @default("6907")
+  description        String?             @db.Text
+  attributes         Json?
+  rawText            String?             @db.Text
+
+  // Extracted image fields
+  primaryImageUrl    String?
+  images             Json?
+
+  // Publishing target
+  importedProductId  String?
+  importedAt         DateTime?
+  modifiedFields     Json?
+
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@index([jobId, sourcePage])
+  @@index([firmId, productCode])
+  @@map("catalogue_import_items")
 }

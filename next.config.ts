@@ -5,13 +5,19 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname),
   },
-  serverExternalPackages: ["@prisma/client", "pg", "bcryptjs"],
+  serverExternalPackages: ["@prisma/client", "pg", "bcryptjs", "@electric-sql/pglite", "@prisma/adapter-pg"],
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "**.amazonaws.com" },
       { protocol: "https", hostname: "**.r2.cloudflarestorage.com" },
       { protocol: "https", hostname: "**.supabase.co" },
     ],
+  },
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "60mb",
+    },
+    proxyClientMaxBodySize: "60mb",
   },
 };
 

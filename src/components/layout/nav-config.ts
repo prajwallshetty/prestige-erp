@@ -179,6 +179,12 @@ export const NAV_SECTIONS: NavSection[] = [
         permissions: [PERMISSIONS.PRODUCT_VIEW],
       },
       {
+        label: "Catalogue OCR Import",
+        href: "/products/catalogue-import",
+        icon: FileScan,
+        permissions: [PERMISSIONS.PRODUCT_VIEW],
+      },
+      {
         label: "Stock",
         href: "/inventory",
         icon: Boxes,

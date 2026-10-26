@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FileScan } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { DataTable, type Column } from "@/components/shared/data-table";
@@ -86,6 +87,7 @@ export default async function ProductsPage({
     price: number;
     quantity: number;
     trackSerials: boolean;
+    imageUrl: string | null;
   }
   const rows: Row[] = products.map((product) => ({
     id: product.id,
@@ -97,6 +99,7 @@ export default async function ProductsPage({
     price: Number(product.sellingPrice),
     quantity: stock.get(product.id) ?? 0,
     trackSerials: product.trackSerials,
+    imageUrl: product.imageUrl,
   }));
 
   const columns: Column<Row>[] = [
@@ -104,11 +107,26 @@ export default async function ProductsPage({
       key: "name",
       header: "Product",
       cell: (row) => (
-        <Link href={`/products/${row.id}`} className="font-medium hover:text-primary hover:underline">
-          {row.name}
-          <span className="ml-2 text-xs font-normal text-muted-foreground">{row.sku}</span>
-          {row.subName ? <span className="block text-xs font-normal text-muted-foreground">{row.subName}</span> : null}
-        </Link>
+        <div className="flex items-center gap-3">
+          {row.imageUrl ? (
+            <img
+              src={row.imageUrl}
+              alt={row.name}
+              className="h-10 w-10 shrink-0 rounded border border-border object-cover bg-muted"
+            />
+          ) : (
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-border bg-muted text-[10px] text-muted-foreground">
+              No img
+            </div>
+          )}
+          <div>
+            <Link href={`/products/${row.id}`} className="font-medium hover:text-primary hover:underline">
+              {row.name}
+              <span className="ml-2 text-xs font-normal text-muted-foreground">{row.sku}</span>
+            </Link>
+            {row.subName ? <span className="block text-xs font-normal text-muted-foreground">{row.subName}</span> : null}
+          </div>
+        </div>
       ),
     },
     { key: "brand", header: "Brand", hideOnMobile: true, cell: (row) => row.brand ?? "—" },
@@ -147,9 +165,17 @@ export default async function ProductsPage({
         description={`${total} products in the catalogue`}
         actions={
           user.permissions.includes("products.create") ? (
-            <Button asChild>
-              <Link href="/products/new">Add product</Link>
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button asChild variant="outline">
+                <Link href="/products/catalogue-import">
+                  <FileScan className="mr-2 h-4 w-4" />
+                  Catalogue OCR Import
+                </Link>
+              </Button>
+              <Button asChild>
+                <Link href="/products/new">Add product</Link>
+              </Button>
+            </div>
           ) : null
         }
       />

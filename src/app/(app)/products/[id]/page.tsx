@@ -93,7 +93,19 @@ export default async function ProductDetailPage({ params }: { params: Promise<{ 
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className={`grid gap-4 ${product.imageUrl ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
+        {product.imageUrl ? (
+          <Card className="overflow-hidden">
+            <CardHeader className="pb-2"><CardTitle className="text-base">Product Image</CardTitle></CardHeader>
+            <CardContent className="flex items-center justify-center p-2">
+              <img
+                src={product.imageUrl}
+                alt={product.name}
+                className="max-h-48 w-full rounded border border-border object-contain bg-muted"
+              />
+            </CardContent>
+          </Card>
+        ) : null}
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-base">Pricing</CardTitle></CardHeader>
           <CardContent className="space-y-1.5 text-sm">

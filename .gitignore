@@ -27,3 +27,5 @@ backups/
 /data/invoice-import/
 /reports/invoice-import/
 .scratch/
+__pycache__/
+*.pyc
