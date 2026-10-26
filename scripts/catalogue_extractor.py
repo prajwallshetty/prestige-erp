@@ -39,6 +39,95 @@ try:
 except ImportError:
     HAS_OPENCV = False
 
+try:
+    os.environ.setdefault("GLOG_minloglevel", "2")
+    os.environ.setdefault("FLAGS_fraction_of_gpu_memory_to_use", "0.0")
+    from paddleocr import PaddleOCR
+    HAS_PADDLEOCR = True
+except ImportError:
+    HAS_PADDLEOCR = False
+
+_paddle_ocr = None
+
+def get_paddle_ocr():
+    global _paddle_ocr
+    if _paddle_ocr is None and HAS_PADDLEOCR:
+        try:
+            _paddle_ocr = PaddleOCR(use_textline_orientation=True, lang="en")
+        except Exception:
+            try:
+                _paddle_ocr = PaddleOCR(use_angle_cls=True, lang="en")
+            except Exception:
+                _paddle_ocr = None
+    return _paddle_ocr
+
+
+def run_paddle_ocr(image_path: str, page_width: float, page_height: float):
+    """Executes PaddleOCR on page preview image and maps detected bounding boxes into PDF coordinate space."""
+    ocr = get_paddle_ocr()
+    if not ocr:
+        return []
+    try:
+        results = ocr.ocr(image_path)
+        blocks = []
+        if not results:
+            return []
+        with Image.open(image_path) as im:
+            iw, ih = im.size
+        scale_x = page_width / float(iw) if iw > 0 else 1.0
+        scale_y = page_height / float(ih) if ih > 0 else 1.0
+
+        for res_item in results:
+            if not res_item:
+                continue
+            # Format A: Modern PaddleX / PaddleOCR dict structure
+            if isinstance(res_item, dict):
+                texts = res_item.get("rec_texts", [])
+                polys = res_item.get("rec_polys", [])
+                boxes = res_item.get("rec_boxes", [])
+                for idx, text in enumerate(texts):
+                    if not text or not str(text).strip():
+                        continue
+                    if idx < len(polys) and polys[idx] is not None:
+                        poly = polys[idx]
+                        xs = [pt[0] for pt in poly]
+                        ys = [pt[1] for pt in poly]
+                        bx0 = float(min(xs)) * scale_x
+                        by0 = float(min(ys)) * scale_y
+                        bx1 = float(max(xs)) * scale_x
+                        by1 = float(max(ys)) * scale_y
+                    elif idx < len(boxes) and boxes[idx] is not None:
+                        box = boxes[idx]
+                        bx0 = float(box[0]) * scale_x
+                        by0 = float(box[1]) * scale_y
+                        bx1 = float(box[2]) * scale_x
+                        by1 = float(box[3]) * scale_y
+                    else:
+                        bx0, by0, bx1, by1 = 0.0, 0.0, page_width, page_height
+                    blocks.append((bx0, by0, bx1, by1, str(text).strip(), 0, 0))
+                continue
+
+            # Format B: Classic PaddleOCR list of [[poly], (text, score)]
+            if isinstance(res_item, (list, tuple)):
+                for entry in res_item:
+                    if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                        bbox_poly, text_info = entry
+                        text = text_info[0] if isinstance(text_info, (list, tuple)) else str(text_info)
+                        xs = [pt[0] for pt in bbox_poly]
+                        ys = [pt[1] for pt in bbox_poly]
+                        bx0 = min(xs) * scale_x
+                        by0 = min(ys) * scale_y
+                        bx1 = max(xs) * scale_x
+                        by1 = max(ys) * scale_y
+                        if text and str(text).strip():
+                            blocks.append((bx0, by0, bx1, by1, str(text).strip(), 0, 0))
+        return blocks
+    except Exception as e:
+        print(f"PaddleOCR parsing warning: {e}", file=sys.stderr)
+        return []
+
+
+
 # Known standard tile brands in ERP
 KNOWN_BRANDS = [
     "Kajaria", "Somany", "Simpolo", "Nitco", "Qutone", "Johnson", 
@@ -414,10 +503,17 @@ def parse_page(
     pix.save(page_preview_path)
     page_preview_url = f"/api/files/catalogues/{job_id}/images/{page_preview_name}"
 
-    # 2. Extract text blocks
+    # 2. Extract text blocks (Native PDF text first, PaddleOCR fallback/enrichment for scanned pages)
     text_blocks = page.get_text("blocks")
     total_text = "".join(b[4] for b in text_blocks).strip()
     is_scanned = len(total_text) < 40
+
+    if (is_scanned or len(total_text) < 50) and HAS_PADDLEOCR:
+        ocr_blocks = run_paddle_ocr(page_preview_path, page_rect.width, page_rect.height)
+        if ocr_blocks:
+            text_blocks = ocr_blocks
+            total_text = " ".join(b[4] for b in ocr_blocks).strip()
+            is_scanned = False
 
     # 3. Extract images (Priority 1: Embedded, Priority 2: Composite Page Crops)
     extracted_images = extract_embedded_images(doc, page, page_no, job_id, out_dir)
