@@ -374,6 +374,16 @@ export function ReviewWorkbench({ job, items, brands, categories }: ReviewWorkbe
         </div>
       </div>
 
+      {job.lastError ? (
+        <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <span className="font-semibold">Extraction Warning / Error: </span>
+            {job.lastError}
+          </div>
+        </div>
+      ) : null}
+
       {/* Status Counters */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div

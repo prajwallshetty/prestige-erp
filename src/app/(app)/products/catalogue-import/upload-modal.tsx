@@ -28,7 +28,7 @@ export function UploadCatalogueModal() {
     e.preventDefault();
     setDragOver(false);
     const dropped = e.dataTransfer.files?.[0];
-    if (dropped && dropped.type === "application/pdf") {
+    if (dropped && (dropped.type === "application/pdf" || dropped.name.toLowerCase().endsWith(".pdf"))) {
       setFile(dropped);
     } else {
       toast.error("Please drop a valid PDF brochure or catalogue");
@@ -50,7 +50,11 @@ export function UploadCatalogueModal() {
         return;
       }
 
-      toast.success("Catalogue uploaded and processed!");
+      if (res.data.status === "FAILED") {
+        toast.error("Catalogue uploaded, but processing encountered an issue. Opening review workbench...");
+      } else {
+        toast.success("Catalogue uploaded and processed!");
+      }
       setOpen(false);
       setFile(null);
       setProgressMsg("");
@@ -130,7 +134,7 @@ export function UploadCatalogueModal() {
                 <input
                   id="catalogue-file"
                   type="file"
-                  accept="application/pdf"
+                  accept="application/pdf,.pdf"
                   className="hidden"
                   onChange={(e) => {
                     const selected = e.target.files?.[0];

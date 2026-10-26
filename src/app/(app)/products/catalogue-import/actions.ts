@@ -55,8 +55,13 @@ export async function uploadCatalogueAction(formData: FormData) {
       // Process error is stored in job record
     }
 
+    const finalJob = await prisma.catalogueImportJob.findUnique({
+      where: { id: job.id },
+      select: { status: true },
+    });
+
     revalidatePath("/products/catalogue-import");
-    return { jobId: job.id, filename: job.sourceFilename, status: job.status };
+    return { jobId: job.id, filename: job.sourceFilename, status: finalJob?.status ?? job.status };
   });
 }
 
